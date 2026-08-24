@@ -1,0 +1,13 @@
+# core
+numpy>=1.24
+scipy>=1.10
+torch>=2.0
+scikit-learn>=1.2
+
+# optional: .h5ad input, the Leiden baseline, CSV export
+anndata>=0.9
+scanpy>=1.9
+pandas>=2.0
+
+# tests
+pytest>=7.0

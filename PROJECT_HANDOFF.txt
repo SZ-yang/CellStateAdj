@@ -1,0 +1,510 @@
+================================================================================
+PROJECT HANDOFF: Transition-Defined Cell States from Time-Resolved scRNA-seq
+Prepared 2026-08-23 for a Claude instance assisting with implementation on HPC
+================================================================================
+
+READ THIS FIRST
+---------------
+This document exists so you can pick up the project without re-deriving the
+design. The method has been through several major revisions; several obvious-
+looking simplifications are WRONG for reasons that are documented here. Sections
+marked [CRITICAL] describe design choices that must not be "simplified" back.
+
+The formal method spec lives in the LaTeX/PDF the user has (plan_8-23.pdf).
+This document gives context, rationale, dataset facts, and build order.
+
+
+================================================================================
+1. THE PROBLEM
+================================================================================
+
+Given scRNA-seq count matrices X^(1)...X^(T) collected at ordered timepoints
+tau_1 < ... < tau_T (destructive sampling -- different cells at each time),
+construct a time-layered DAG of cell states and the transitions between them.
+
+The scientific premise: most workflows define cell states FIRST (expression
+clustering / marker annotation) and estimate transitions between those fixed
+units afterward. We instead define a state by its role in the transition
+system -- a cell state should be a group of cells with similar probable
+predecessors and similar probable descendants, not merely similar expression.
+
+Output is a DAG, not a tree, because development contains both divergence
+(one state -> several) and convergence (several -> one). A tree cannot
+represent convergence, which matters especially in reprogramming.
+
+DATA CONSTRAINT: count matrices + time labels only. No lineage barcodes, no
+spatial coordinates, no pre-existing cell-type annotation. RNA velocity is
+possible ONLY if raw reads can be reprocessed for spliced/unspliced counts
+(not yet determined -- see Section 9).
+
+
+================================================================================
+2. THE METHOD IN BRIEF
+================================================================================
+
+Two explicit stages. This is deliberate; see [CRITICAL] in Section 3.
+
+STAGE 1 -- build a fixed transport chain:
+  - Learn a shared expression representation z_i^(t) = f_psi(x_i^(t)),
+    then FREEZE it. (PCA/GLM-PCA/scVI.)
+  - Cost between adjacent times:
+      C^(t)_ij = ||z_i^(t) - z_j^(t+1)||^2 / delta_tau_t
+  - Entropic OT coupling P^eps_t over Pi(a_t, a_{t+1}), balanced.
+  - Select eps_star by the informativeness criterion (Section 4), then
+    FREEZE:  P^ref_t := P^{eps_star}_t.
+
+STAGE 2 -- jointly coarse-grain the whole chain:
+  - Soft memberships M_t in (0,1)^{n_t x K}, rows sum to 1, parameterized
+    as softmax(U_t) so entries are strictly positive.
+  - Q_t = diag(a_t) M_t ;  g_t = M_t^T a_t   (state masses)
+  - INDUCED state transition matrix:
+      T_t = M_t^T P^ref_t M_{t+1}
+    (not a free parameter -- see Section 3)
+    A_t = diag(g_t)^{-1} T_t          forward conditional
+    B_t = diag(g_{t+1})^{-1} T_t^T    reverse conditional
+  - Low-rank reconstruction:
+      Phat_t = Q_t diag(g_t)^{-1} T_t diag(g_{t+1})^{-1} Q_{t+1}^T
+  - Cell fingerprints (computed from P^ref, NOT from Phat):
+      f+_ti = P^ref_t(i,:) M_{t+1} / (P^ref_t(i,:) 1)      in simplex^{K-1}
+      f-_ti = P^ref_{t-1}(:,i)^T M_{t-1} / (P^ref_{t-1}(:,i)^T 1)
+  - State fingerprint prototypes (KL barycenters, closed form):
+      phi+_tk = sum_i a_ti M_t,ik f+_ti / g_t,k
+      phi-_tk = sum_i a_ti M_t,ik f-_ti / g_t,k
+  - Objective (minimize over U_1..U_T):
+      L = lambda_compress * L_compress
+        + lambda_x        * L_expression
+        + lambda_minus    * L_-
+        + lambda_plus     * L_+
+
+    L_compress = sum_t KL(P^ref_t || Phat_t)      [sparse support only]
+    L_expression = sum_{t,i,k} a_ti M_t,ik ||z_i - mu_tk||^2
+    L_+ = sum_{t,i,k} a_ti M_t,ik KL(f+_ti || phi+_tk)
+    L_- = analogous with f-, phi-
+
+THE KEY IDENTITY (this is the paper's best asset -- verified, exact):
+  Under the joint p+_t(i,k,l) = a_ti M_t,ik f+_ti,l,
+      L_+,t = I(I_t ; Z_{t+1} | Z_t)
+      L_-,t = I(I_t ; Z_{t-1} | Z_t)
+  where I_t is cell identity and Z_t is the learned state. It is exact,
+  not approximate, and it holds BECAUSE the prototypes are KL barycenters.
+  So the objective says: after conditioning on the state, individual cell
+  identity should carry little extra information about predecessor or
+  descendant state. This is an information-bottleneck / causal-state
+  ("minimal sufficient statistic for the future") formulation, bidirectional.
+  If you touch the prototype definition, this identity breaks. Don't.
+
+
+================================================================================
+3. [CRITICAL] TWO DEGENERACIES THAT SHAPE THE DESIGN
+================================================================================
+
+DEGENERACY 1 -- exact, from low-rank factorization.
+  If fingerprints are computed from Phat_t (the model's own low-rank coupling)
+  rather than from P^ref_t, then:
+
+      f+_ti = M_t(i,:) B_t,   where
+      B_t = diag(g_t)^{-1} T_t diag(g_{t+1})^{-1} Q_{t+1}^T M_{t+1}
+
+  B_t does NOT depend on i. Proof: row i of Q_t is a_ti M_t(i,:), so the a_ti
+  cancels exactly when dividing. Consequence: two cells hard-assigned to the
+  same state have IDENTICAL fingerprints by construction, for ANY assignment.
+  The two-sided loss is then driven to zero by setting phi+_tk = B_t(k,:),
+  and it degenerates into a membership-sharpening penalty that measures
+  nothing.
+
+  => THIS IS WHY P^ref IS COMPUTED INDEPENDENTLY AND FROZEN.
+  => Do not "simplify" by reusing Phat for fingerprints.
+  => Do not make P^ref a function of M in any way.
+
+DEGENERACY 2 -- soft, from entropic regularization.
+  As eps -> infinity, P^eps_t -> a_t a_{t+1}^T (independent coupling), so
+  f+_ti -> g_{t+1} for every i. All fingerprints become identical, V^± -> 0,
+  and L_± becomes vacuous again -- same outcome as Degeneracy 1 by a different
+  mechanism.
+  At very small eps the coupling is near-deterministic and dominated by
+  sampling noise.
+  => There is an INFORMATIVE WINDOW in eps. The entire method lives inside it.
+  => Section 4 describes how to find it. Do this before anything else.
+
+DEGENERACY 3 -- coarsening pressure (partially mitigated, still needs watching).
+  L_+ at time t is a function of M_{t+1}. If M_{t+1} collapses onto fewer
+  effective states, Z_{t+1} carries less information and L_+ decreases. At
+  K = 1, f+_ti = [1] for all i and L_+ = 0 exactly.
+  Mitigations already in the spec:
+    - K is shared and FIXED before the lambda sweep
+    - L_± is EXCLUDED from the K-selection criterion
+  Mitigation still needed in code:
+    - K is fixed but EFFECTIVE occupancy can still collapse. Instrument
+      K_eff_t = exp(H(g_t)) every iteration and log it. If K_eff collapses
+      as lambda_plus grows, you have found the edge of the usable regime.
+      Report this; it is a result, not just a bug.
+
+
+================================================================================
+4. FIRST EXPERIMENT (do this before writing the optimizer)
+================================================================================
+
+The eps-informativeness curve. Requires only Sinkhorn + diagnostics. No M,
+no objective, no state learning.
+
+  For each adjacent pair t and each eps on a grid:
+    I_cell_t(eps) = KL( P^eps_t || a_t a_{t+1}^T )
+      = sum_{ij: P>0} P_ij log( P_ij / (a_ti a_{t+1,j}) )
+    normalized: Ibar = I_cell / min(H(a_t), H(a_{t+1}))
+  Also compute, for a random subsample of cells, the distribution of pairwise
+  KL between cell fingerprints f+ (using a provisional fine clustering for
+  M_{t+1}, e.g. Leiden) -- this is the direct measure of whether fingerprints
+  carry cell-level variation.
+
+  Also compute at each eps:
+    - stability under duplicate-sample resampling
+    - stability under small perturbations of C
+
+WHY THIS FIRST: it answers whether an informative window exists AT ALL on this
+data at this sampling density. If Ibar collapses to ~0 before eps is small
+enough to be stable, the fingerprints carry nothing and the method cannot work
+as designed. Better to learn that in week 1 than month 3.
+
+Run it at BOTH 12h and 48h timepoint spacing (see Section 5 on subsampling) --
+this doubles as the first data point of the delta-tau study.
+
+
+================================================================================
+5. DATASET: Schiebinger et al. 2019 (Waddington-OT) mouse reprogramming
+================================================================================
+
+Facts verified from the paper (WOT.pdf is in the project files):
+
+  - System: secondary MEF -> iPSC reprogramming. Dox-inducible OKSM cassette,
+    Oct4-IRES-EGFP reporter. Dox added day 0, withdrawn day 8.
+  - MEFs derived from A SINGLE FEMALE EMBRYO (E13.5, mixed B6;129).
+  - MAIN EXPERIMENT: 259,155 cells, 39 timepoints over 18 days, ~12h spacing
+    (6h between days 8-9). 251,203 retained after QC. 10x v2.
+  - SECOND EXPERIMENT: 65,781 cells, 10 timepoints, ~48h spacing, 10x v1.
+    Reported as consistent with the main one.
+  - DUPLICATE SAMPLES were collected at each timepoint in the main experiment.
+  - CONDITION BRANCH AT DAY 8: after Dox withdrawal, cells go to either
+    serum-free 2i (Phase-2(2i)) or stay in serum (Phase-2(serum)).
+
+REPLICATE STRUCTURE -- IMPORTANT AND PREVIOUSLY UNRESOLVED:
+  The duplicates are culture/well-level replicates from ONE embryo, not
+  independent biological replicates. Effective biological n for the whole
+  experiment is one animal.
+  => What IS available: duplicate-sample split-half stability (n=2 per
+     timepoint), cross-experiment reproducibility (fit on experiment 2, check
+     structure recovered in experiment 1), initialization stability, and
+     eps/K/cost sensitivity.
+  => What is NOT available: a proper R~100 biological-replicate bootstrap.
+     DO NOT BUILD THAT MACHINERY FOR THIS DATASET.
+  => Label everything honestly: "culture-replicate stability", not
+     "biological uncertainty". WOT itself used these duplicate batches to
+     estimate interpolation variability, so there is precedent.
+
+BUILT-IN TEST CASE FOR THE CENTRAL HYPOTHESIS:
+  The WOT paper reports that ancestors of stromal-like cells begin diverging
+  as early as day 1.5, while ancestors of the pluripotent-, epithelial-,
+  trophoblast-, and neural-like populations are INDISTINGUISHABLE UNTIL AFTER
+  DAY 8 (when MET occurs).
+  - "Transcriptionally indistinguishable, different futures" is exactly the
+    case where transition-defined states should separate cells that
+    expression clustering merges. Days 5-8 is the place to look.
+  - The day-1.5 stromal divergence is the POSITIVE CONTROL: both our method
+    and plain clustering should find it. If ours doesn't, it's a bug.
+
+PRACTICAL DECISIONS ALREADY MADE:
+  - START WITH PHASE 1 ONLY, DAYS 0-8. Single unbranched series (~17
+    timepoints), contains the stromal divergence. Feeding the whole thing in
+    would make the day-8 experimental branch look like a developmental
+    bifurcation. Add one arm later.
+  - Subsample to ~1-2k cells per timepoint for development. Scale up after
+    the optimizer is validated. (~6.4k cells/timepoint at full scale.)
+
+DENSITY -- A CONCERN AND AN OPPORTUNITY:
+  12h spacing is very dense. Adjacent distributions are nearly identical, so
+  the coupling is close to diagonal and f+ may be little more than a readout
+  of latent position. The G^± geometric null (Section 6) is designed to
+  detect exactly this, and it may report that most of the signal IS geometry.
+  BUT: the same density lets you vary delta_tau by subsampling every 2nd,
+  4th, 8th timepoint (12h/24h/48h/96h) and measure how Ibar, V^±, G^±, and
+  state recovery change. WOT reports OT recovers couplings well at 1-day
+  intervals and degrades at 2-day intervals -- that's a reference point.
+  This delta-tau study is potentially the strongest contribution in the
+  project and is nearly free once the pipeline runs. Build the subsampling
+  utility early.
+
+
+================================================================================
+6. DIAGNOSTICS (not optional -- they carry the interpretation)
+================================================================================
+
+WITHIN-STATE DISPERSION:
+  V+_tk = (1/g_tk) sum_i a_ti M_t,ik KL(f+_ti || phi+_tk)
+  V-_tk = analogous
+  These are DIAGNOSTICS, deliberately not driven to zero.
+
+GEOMETRIC NULL (this is what makes V interpretable):
+  Because P^ref comes from distances in z-space, a state straddling a
+  geometric boundary gets high V automatically, with no biology involved.
+  Fit cross-fitted smooth predictors fhat+_t(z), fhat-_t(z) (kernel
+  regression / local regression / constrained NN). Cross-fitting must hold
+  out the cell AND its replicate.
+    G+_tk = (1/g_tk) sum_i a_ti M_t,ik KL(f+_ti || fhat+_t(z_i))
+  Interpretation:
+    high V, low G  -> heterogeneity is explained by smooth expression geometry
+    high V, high G -> "excess non-smooth transition heterogeneity"
+  The latter is NECESSARY BUT NOT SUFFICIENT evidence for fate priming. It
+  can also be coupling noise, representation error, or a bad null model.
+  Never report it as priming without the supplementary checks (permutation
+  tests, held-out genes, external velocity/lineage evidence).
+
+BRANCHING VS HETEROGENEITY (a real distinction the method can make):
+  N_child(t,k)  = exp(H(A_t(k,:)))
+  N_parent(t+1,l) = exp(H(B_t(l,:)))
+  - Coherent divergence: N_child > 1 AND V+ small (whole state shares one
+    multimodal future)
+  - Outgoing heterogeneity: V+ large (different cells, different futures)
+  These are different biological claims and the method separates them. Do
+  NOT use "mode counting" -- A_t(k,:) is a distribution over unordered state
+  indices with no topology.
+
+
+================================================================================
+7. IMPLEMENTATION NOTES AND PITFALLS
+================================================================================
+
+COMPUTE COST -- plan for this:
+  L_compress evaluation needs Phat_ij for each (i,j) in supp(P^ref), and each
+  entry is a K x K quadratic form: |S| * K^2 per interval per objective
+  evaluation. With n=6.4k, kappa=50, K=30 that's ~3e8 per interval, ~1e10
+  across 38 intervals -- and backtracking line search means several
+  evaluations per step. GPU with sparse ops is realistic; CPU is not.
+  Subsample during development.
+
+SPARSE SUPPORT FEASIBILITY:
+  A row-wise kNN graph does NOT guarantee a feasible balanced coupling with
+  the required column marginals. Support must include both source->target
+  and target->source neighbors. Increase kappa until Sinkhorn converges to
+  a feasible plan. Report sensitivity to kappa alongside sensitivity to eps.
+
+NUMERICAL FLOORS:
+  Softmax memberships are strictly positive so Phat > 0 mathematically, but
+  in floating point you will get underflow. Use log(Phat_ij + delta) with a
+  small fixed delta. Log the fraction of entries hitting the floor -- if it's
+  large, K is too big or memberships have saturated.
+
+KL SIMPLIFICATION:
+  Both P^ref and Phat have total mass 1 (the diag(g)^{-1} normalizations
+  arrange this), so the generalized-KL "-p+q" terms cancel in aggregate and
+  KL reduces to sum p log(p/q) over supp(P^ref) only. Verify this numerically
+  as a unit test -- if masses don't match to ~1e-10, something is wrong
+  upstream.
+
+OPTIMIZATION IS NOT MONOTONE BY DEFAULT:
+  L_+ at time t depends on M_{t+1}, and L_- at t+1 depends on M_t. This is
+  self-referential clustering -- the feature space being clustered depends on
+  the labels. Simultaneous updates of all M_t can INCREASE the objective.
+  Mitigations already in the spec: full-gradient with backtracking line
+  search, accept only if the complete objective decreases. For large data,
+  forward-backward block-coordinate with neighbors held fixed and damping
+    M_t <- (1-gamma) M_t_old + gamma * M_t_new
+  Always log objective traces. State convergence as "to a fixed point", not
+  as monotone descent, unless line search guarantees it.
+
+WHAT TO INSTRUMENT EVERY ITERATION:
+  - objective and each component separately
+  - K_eff_t = exp(H(g_t))  [coarsening watch, Section 3]
+  - min/max g_t,k
+  - fraction of Phat entries at the numerical floor
+  - mean V+, V-
+  - membership change ||M_t^new - M_t^old||
+
+UNRESOLVED SPEC ITEM -- decide before writing K-selection code:
+  "Held-out or cross-fitted compression loss" is underspecified and it is the
+  PRIMARY K criterion. Compression loss decreases monotonically in K on
+  training data, so the held-out protocol does all the work. But P^ref is
+  defined on the full cell set and holding out cells changes the marginals
+  and hence the coupling. Two options:
+    (a) refit P^ref on the reduced cell set, evaluate on held-out pairs
+    (b) hold out entire duplicate samples, evaluate the transferred state map
+  These are different procedures with different failure modes. Pick one,
+  document it, don't switch silently.
+
+
+================================================================================
+8. BUILD ORDER
+================================================================================
+
+Do NOT start at the top of Algorithm 1. Build what can cheaply kill the
+project first.
+
+  STEP 1. eps-informativeness curve on WOT days 0-8, at 12h and 48h spacing.
+          (Section 4.) No state learning required.
+
+  STEP 2. Birth-death SDE simulator. This is load-bearing, not optional:
+          it is the ONLY place ground truth states and transitions exist,
+          and you will need it to debug a non-convex objective with
+          self-referential features. On real data you cannot distinguish a
+          wrong answer from a surprising one.
+          Required scenarios: persistent states; gradual drift; branching;
+          merging; temporary disappearance and recurrence; unequal intervals;
+          missing timepoints; expansion/contraction; TRANSCRIPTIONALLY SIMILAR
+          STATES WITH DIFFERENT TRANSITION ROLES; transcriptionally distinct
+          states with similar transition roles; replicate batch effects.
+          The last two scenario types are the decisive ones -- they are where
+          transition-defined states must differ from expression-defined ones.
+          Observation model: X_ig ~ NB(mu_g(Z_i), theta_g).
+
+  STEP 3. Optimizer with lambda_plus = lambda_minus = 0. This reduces to
+          compression + expression coherence, a well-behaved clustering
+          problem, and it is your internal baseline.
+
+  STEP 4. Turn on the fingerprint terms. Run the NON-DEGENERACY CHECK:
+            (i) within-state variance of f± is nonzero
+            (ii) removing L_± measurably changes M_t
+            (iii) ablation: fingerprints from P^ref vs from Phat (this
+                  demonstrates Degeneracy 1 empirically and converts a
+                  technical correction into a reportable finding)
+          DO NOT PROCEED IF THIS FAILS.
+
+  STEP 5. K selection (with the protocol decided in Section 7).
+
+  STEP 6. Diagnostics: V±, geometric null G±, branching/merging.
+
+  STEP 7. Stability: duplicate-sample resampling, initialization spread,
+          cross-experiment check against the 10-timepoint experiment.
+
+  STEP 8. delta-tau subsampling study (Section 5).
+
+  STEP 9. Optional: global-family postprocessing.
+
+BASELINES (run in parallel with the above, on the same cost specification):
+  - expression clustering (Leiden) then OT -- the WOT/moscot-style baseline
+  - CellRank 2 -- has a RealTimeKernel built for exactly this data; its
+    macrostates come from GPCCA coarse-graining of a transition matrix, so
+    they ARE transition-defined in a meaningful sense. This is a STRONGER
+    comparator than it looks. The honest distinction from our method is
+    "joint across the whole series" vs "two-stage per-kernel", not
+    "transition-defined vs expression-defined".
+  - HM-OT -- closest existing method (Halmos, Gold, Liu, Raphael; RECOMB 2025;
+    code at github.com/raphael-group/HM-OT). See warning below.
+
+  [IMPORTANT] HM-OT was published on zebrafish and mouse-embryo Stereo-seq,
+  NOT on WOT. Reproduce HM-OT on its OWN published data first to validate the
+  pipeline, THEN port to WOT. Otherwise a bad HM-OT result on WOT is
+  uninterpretable, and the entire novelty framing depends on characterizing
+  HM-OT's failure modes correctly. Note HM-OT's published runs used FGW/GW
+  costs for spatial data; on WOT you are in the plain Wasserstein/FRLC case,
+  which is a different code path.
+
+
+================================================================================
+9. POSITIONING AND NOVELTY (read before writing any paper text)
+================================================================================
+
+WHAT IS AND IS NOT NOVEL -- the user has already been through this carefully:
+
+  HM-OT already does: joint learning of latent states and an OT transition
+  map via low-rank factorization; per-timepoint ranks that can differ; AND
+  an explicit forward-backward (alpha/beta) pass that combines past and
+  future information when learning each Lambda_n. Do not claim "we use both
+  directions" or "we jointly learn states and transitions" as novelty.
+
+  Also note: because P^ref is frozen and T_t = M^T P^ref M, this method is
+  structurally TWO-STAGE (build coupling -> coarse-grain), which is the same
+  shape as CellRank. Do not claim jointness we no longer have. The defensible
+  claim is a better coarse-graining OBJECTIVE applied jointly across the whole
+  series, with an explicit sufficiency criterion.
+
+  DEFENSIBLE CONTRIBUTIONS, in order of strength:
+    1. The CMI identity and the information-bottleneck / causal-state framing
+       of what a cell state IS. This gives a principled definition rather than
+       a heuristic, and explains why the criterion should work.
+    2. The degeneracy results (Sections 3.1, 3.2) -- provable, verifiable in
+       a few lines by a reviewer, and they explain a non-obvious design choice.
+    3. Separating branching from within-state heterogeneity (N_child vs V+),
+       with the geometric null making the distinction defensible.
+    4. Systematic cost/eps/delta-tau sensitivity -- nobody in the OT
+       trajectory literature does this properly, and it speaks to the
+       reliability of that whole literature, not just our method.
+    5. Stability reporting (honest about what the WOT data supports).
+
+  FALLBACK / POSSIBLE FIRST PAPER: a systematic empirical characterization of
+  WHEN transition-defined states differ from expression-defined states (at
+  bifurcations? at convergence? in transient populations? as a function of
+  delta_tau?). Requires no new machinery beyond HM-OT + clustering + the
+  simulator. Lower risk, high citation value, and it justifies the whole
+  research direction. Treat this as a real outcome, not a failure mode.
+
+INTERPRETIVE LIMITS -- must appear in any writeup:
+  - Snapshot data do not uniquely identify individual trajectories. OT picks
+    a coupling by minimizing a chosen cost; that assumption adds no
+    information not in the data. Deep learning does not fix this, it just
+    moves the assumption into architecture and regularization.
+  - Cells with identical measured profiles cannot be assigned distinct futures
+    without additional informative structure.
+  - Distinguishing genuine fate priming from transport geometry is not
+    possible from expression snapshots alone -- hence G±, and hence the
+    "necessary but not sufficient" language.
+  - Inferred merging is POPULATION-level convergence, not proof that
+    individual cells from distinct lineages physically merged.
+  - Uncalibrated cell counts are not population abundances. This is why the
+    model is BALANCED by default. Unbalanced OT comes only after abundance
+    assumptions are validated. (Cell-cycle and apoptosis signature scores are
+    computable from counts alone if growth estimates are needed later.)
+  - Transient states occurring entirely between sampled times cannot be
+    recovered. "Recovery of transient states" in benchmarks means sampled-but-
+    short-lived only.
+  - Edges are "transport-implied developmental compatibility", never
+    "observed lineage".
+
+
+================================================================================
+10. OPEN QUESTIONS
+================================================================================
+
+  1. Whether raw reads are available for the WOT dataset (needed for
+     spliced/unspliced -> velocity-informed cost). Not yet checked.
+  2. Held-out compression protocol: option (a) or (b) in Section 7. Must be
+     decided before K-selection code is written.
+  3. Whether the informative eps window exists at 12h spacing on this data.
+     Step 1 answers this.
+  4. Whether the day 5-8 population (transcriptionally indistinguishable,
+     different futures per WOT) actually separates under transition-defined
+     states. This is the central hypothesis test.
+  5. Longer term: identifiability theory for transition-defined states --
+     under what conditions are they identifiable from adjacent-time marginals,
+     and where does the delta_tau crossover sit at which they become
+     indistinguishable from expression-defined states? The delta-tau study
+     is the empirical version; a theoretical characterization would be a
+     substantially stronger contribution.
+
+
+================================================================================
+11. THINGS NOT TO DO
+================================================================================
+
+  - Do not compute fingerprints from Phat. (Degeneracy 1.)
+  - Do not let P^ref depend on M in any way.
+  - Do not change the prototype definition away from the weighted mean /
+    KL barycenter -- it breaks the CMI identity.
+  - Do not make T_t a free parameter with an alignment loss to the induced
+    version. That was an earlier design; it is redundant (either the
+    alignment dominates and T carries no new information, or T is
+    underdetermined) and costs two hyperparameters.
+  - Do not use L_± in K selection. (Degeneracy 3.)
+  - Do not add an L1 penalty on Q_t or T_t -- their total mass is fixed so
+    their L1 norms are constant.
+  - Do not use an outgoing-entropy penalty to encourage sparse branching. A
+    clean bifurcation has H_out = log 2 and would be penalized -- it
+    suppresses exactly the events we want to find.
+  - Do not use "mode counting" on A_t(k,:). No topology on state indices.
+  - Do not build a large-R biological-replicate bootstrap for the WOT data.
+  - Do not feed days 0-18 with both arms in as one series without deciding
+    how to handle the day-8 experimental branch.
+  - Do not add amortized assignment, jointly-learned embeddings, unbalanced
+    transport, or continuous dynamics in the first implementation. All are
+    documented later extensions.
+
+================================================================================
+END OF HANDOFF
+================================================================================
