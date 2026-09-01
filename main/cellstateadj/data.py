@@ -166,25 +166,121 @@ def subsample_cells(
     return data.select_cells(picks)
 
 
-def split_half_by_replicate(data: TimeSeriesData, seed: int = 0):
+def restrict_to_shared_replicates(data: TimeSeriesData, verbose: int = 1):
+    """Drop cells whose replicate label is not present at EVERY timepoint.
+
+    Call this BEFORE learning the representation, not after.  The PCA basis and
+    the global cost scale are fit on whatever cells are passed to them, so
+    restricting afterwards leaves the discarded replicates influencing both --
+    the analysis is then quietly transductive in the cells it claims to have
+    excluded, and the two halves are no longer comparable on a basis derived
+    only from what they contain.
+    """
+    if data.replicate is None:
+        raise ValueError("restrict_to_shared_replicates needs replicate labels")
+    per_t = [set(np.unique(np.asarray(r)).tolist()) for r in data.replicate]
+    shared = set.intersection(*per_t) if per_t else set()
+    if not shared:
+        raise ValueError(
+            f"no replicate label is present at every timepoint: {per_t}")
+    dropped = sorted(set.union(*per_t) - shared)
+    if not dropped:
+        return data
+    keep = [np.flatnonzero(np.isin(np.asarray(r), sorted(shared)))
+            for r in data.replicate]
+    out = data.select_cells(keep)
+    if verbose:
+        print(f"[replicates] restricted to labels shared by every timepoint "
+              f"{sorted(shared)}; dropped {dropped} "
+              f"({sum(data.n_cells) - sum(out.n_cells)} cells)")
+    return out
+
+
+def split_half_by_replicate(data: TimeSeriesData, seed: int = 0,
+                            paired: bool = True,
+                            restrict_to_shared: bool = False):
     """Split into two series by culture replicate, for stability checks.
 
-    Returns ``(half_a, half_b)``.  With exactly two replicates per timepoint
-    this is the duplicate-sample split; with more it is a random 50/50 split of
-    replicate labels at each timepoint.
+    Returns ``(half_a, half_b)``.
+
+    [CRITICAL] With ``paired=True`` (the default) the replicate subset is chosen
+    ONCE and reused at every timepoint, so half A is the same culture lineage
+    all the way through.  WOT ran parallel time courses, so a replicate label
+    tracks one culture across time; drawing the subset independently per
+    timepoint would put replicate 0 in half A early and replicate 1 in half A
+    later, which is not a held-out sample at all -- it leaks the same
+    experimental unit into both halves and silently inflates the held-out K
+    curve and the replicate support.
+
+    [CRITICAL] Choosing the subset once is only sufficient if every timepoint
+    carries the SAME label set.  If the labels differ across time -- say
+    ``t0: A,B,C`` but ``t1: A,B,D`` -- then a half defined as "everything not in
+    {A,B}" is culture C at t0 and culture D at t1: still one label set on paper,
+    two different cultures in fact, and neither half is empty so an
+    emptiness check does not catch it.  ``paired=True`` therefore requires the
+    label sets to agree at every timepoint and raises otherwise.  Pass
+    ``restrict_to_shared=True`` to drop cells whose replicate is not present at
+    every timepoint and split on the intersection instead; that discards data,
+    so it is opt-in rather than a silent repair.
+
+    Set ``paired=False`` only if the labels really are independent wells
+    harvested per timepoint with no across-time correspondence.
     """
     if data.replicate is None:
         raise ValueError("split_half_by_replicate needs replicate labels")
     rng = np.random.default_rng(seed)
     idx_a, idx_b = [], []
-    for t in range(data.T):
-        groups = np.unique(data.replicate[t])
+
+    if paired:
+        per_t = [set(np.unique(np.asarray(r)).tolist()) for r in data.replicate]
+        shared = set.intersection(*per_t) if per_t else set()
+        if any(s != per_t[0] for s in per_t):
+            missing = {t: sorted(per_t[t] - shared) for t in range(data.T)
+                       if per_t[t] - shared}
+            if not restrict_to_shared:
+                raise ValueError(
+                    f"a paired split needs the same replicate labels at every "
+                    f"timepoint, but they differ: shared={sorted(shared)}, "
+                    f"timepoint-specific={missing}. A half built from a "
+                    f"non-shared label is a DIFFERENT culture at different "
+                    f"timepoints, which is not a paired hold-out. Pass "
+                    f"restrict_to_shared=True to split on the shared labels "
+                    f"only (this drops the other cells), or paired=False if "
+                    f"the labels really are independent per-timepoint wells."
+                )
+            keep = [np.flatnonzero(np.isin(np.asarray(r), sorted(shared)))
+                    for r in data.replicate]
+            data = data.select_cells(keep)
+            per_t = [set(np.unique(np.asarray(r)).tolist()) for r in data.replicate]
+
+        groups = np.array(sorted(per_t[0]))
+        if len(groups) < 2:
+            raise ValueError(
+                f"paired split needs >= 2 replicate groups present at every "
+                f"timepoint, found {len(groups)}: {groups.tolist()}"
+            )
         perm = rng.permutation(len(groups))
-        half = max(1, len(groups) // 2)
-        ga = set(groups[perm[:half]].tolist())
-        mask = np.array([r in ga for r in data.replicate[t]])
-        idx_a.append(np.flatnonzero(mask))
-        idx_b.append(np.flatnonzero(~mask))
+        ga = set(groups[perm[:max(1, len(groups) // 2)]].tolist())
+        for t in range(data.T):
+            mask = np.array([r in ga for r in data.replicate[t]])
+            idx_a.append(np.flatnonzero(mask))
+            idx_b.append(np.flatnonzero(~mask))
+        empty = [t for t in range(data.T)
+                 if len(idx_a[t]) == 0 or len(idx_b[t]) == 0]
+        if empty:   # backstop: labels agree but some group has no cells
+            raise ValueError(
+                f"the paired replicate split leaves one half empty at "
+                f"timepoint(s) {empty} for group(s) {sorted(ga)}."
+            )
+    else:
+        for t in range(data.T):
+            groups = np.unique(data.replicate[t])
+            perm = rng.permutation(len(groups))
+            ga = set(groups[perm[:max(1, len(groups) // 2)]].tolist())
+            mask = np.array([r in ga for r in data.replicate[t]])
+            idx_a.append(np.flatnonzero(mask))
+            idx_b.append(np.flatnonzero(~mask))
+
     return data.select_cells(idx_a), data.select_cells(idx_b)
 
 

@@ -54,6 +54,16 @@ def parse_args(argv=None):
     p.add_argument("--method", default="full_gradient",
                    choices=["full_gradient", "block_coordinate"])
     p.add_argument("--no-geometric-null", action="store_true")
+    p.add_argument("--overwrite", action="store_true",
+                   help="replace an existing run in --out; without it a "
+                        "non-empty output directory is refused, because a "
+                        "refused fit that writes only summary.json would "
+                        "otherwise leave the PREVIOUS run's memberships and DAG "
+                        "edges sitting there looking valid")
+    p.add_argument("--allow-nonconverged", action="store_true",
+                   help="write outputs even if the fit did not converge; the "
+                        "run directory is stamped NONCONVERGED.txt and the "
+                        "summary records the status")
     p.add_argument("--compare-baseline", action="store_true",
                    help="also fit expression clustering + the same induced map")
     p.add_argument("--seed", type=int, default=0)
@@ -63,9 +73,44 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+# every file this script can produce; cleared under --overwrite so a rerun
+# cannot leave an artefact of the previous run behind
+_ARTIFACTS = ("memberships.npz", "diagnostics.npz", "events.csv",
+              "dag_edges.json", "summary.json", "NONCONVERGED.txt")
+
+
+def _prepare_outdir(path: str, overwrite: bool) -> None:
+    """Start from a clean directory, or refuse.
+
+    The non-convergence gate writes only ``summary.json``.  In a REUSED
+    directory that leaves the previous run's ``memberships.npz`` and
+    ``dag_edges.json`` in place, unmarked and looking valid, while the console
+    says only summary.json was written -- the exact failure the gate exists to
+    prevent.  A converged rerun after ``--allow-nonconverged`` would likewise
+    inherit a stale ``NONCONVERGED.txt`` and disown a perfectly good fit.
+    """
+    if not os.path.isdir(path):
+        os.makedirs(path, exist_ok=True)
+        return
+    existing = sorted(os.listdir(path))
+    if not existing:
+        return
+    if not overwrite:
+        raise SystemExit(
+            f"[fit] output directory {path} is not empty ({', '.join(existing[:6])}"
+            f"{', ...' if len(existing) > 6 else ''}). Stale files from an "
+            f"earlier run would be indistinguishable from this run's outputs. "
+            f"Pass --overwrite to replace them, or choose a new --out."
+        )
+    for name in _ARTIFACTS:
+        f = os.path.join(path, name)
+        if os.path.exists(f):
+            os.remove(f)
+
+
 def main(argv=None):
     args = parse_args(argv)
-    os.makedirs(args.out, exist_ok=True)
+    _prepare_outdir(args.out, args.overwrite)
 
     truth = None
     if args.sim:
@@ -80,9 +125,27 @@ def main(argv=None):
                             replicate_key=args.replicate_key)
         print(f"[data] {args.h5ad}: {data}")
 
-    if args.stride > 1:
+    strided = args.stride > 1
+    if strided:
         data = subsample_timepoints(data, stride=args.stride)
     data = subsample_cells(data, args.n_per_timepoint, seed=args.seed)
+
+    if truth is not None and strided:
+        # truth.states and truth.T_true are indexed by the ORIGINAL timepoints.
+        # Scoring a strided fit against them silently compares timepoint i of
+        # the fit with timepoint i of the full series (ARI computed across the
+        # wrong pairs), and then runs off the end of T_true.  The state labels
+        # can be strided; T_true cannot -- the lineage flow across a skipped
+        # timepoint is not a product of the recorded per-interval joints -- so
+        # transition recovery is simply not defined here.
+        idx = list(range(0, len(truth.states), args.stride))
+        truth_states = [truth.states[i] for i in idx]
+        truth = None
+        print(f"[truth] stride={args.stride}: state recovery is scored on the "
+              f"strided timepoints {idx}; transition recovery is skipped "
+              f"(T_true is not composable across skipped timepoints).")
+    else:
+        truth_states = None if truth is None else truth.states
 
     cfg = PipelineConfig()
     cfg.coupling.epsilon = args.epsilon
@@ -104,12 +167,40 @@ def main(argv=None):
     result = run_pipeline(data, cfg, verbose=args.verbose)
     out = {"config": json.loads(cfg.to_json()), "summary": result.summary()}
 
-    if truth is not None:
-        rec = evaluate.state_recovery(result.fit.M, truth.states)
+    # A fit that stopped at max_iter or failed its line search never met its
+    # tolerances.  Memberships, the induced transition map, the event table and
+    # the DAG edges are all read off that fit, so exporting them unmarked
+    # publishes an optimiser artefact as a result.  Refuse by default; under
+    # --allow-nonconverged still write everything, but stamp the directory so
+    # the outputs cannot be mistaken for a finished fit.
+    status = getattr(result.fit, "status", "converged")
+    converged = bool(getattr(result.fit, "converged", True))
+    out["fit_status"] = status
+    out["converged"] = converged
+    if not converged:
+        msg = (f"[fit] DID NOT CONVERGE: status={status}, "
+               f"n_iter={result.fit.n_iter}, objective={result.fit.objective:.6e}. "
+               f"Raise --max-iter (currently {args.max_iter}), or loosen the "
+               f"tolerances in OptimConfig.")
+        if not args.allow_nonconverged:
+            out["outputs_written"] = ["summary.json"]
+            with open(os.path.join(args.out, "summary.json"), "w") as fh:
+                json.dump(out, fh, indent=2, default=float)
+            print(f"\n{msg}\n[fit] refusing to write memberships, diagnostics, "
+                  f"events or DAG edges. Wrote {args.out}/summary.json only. "
+                  f"Pass --allow-nonconverged to override.")
+            return out
+        print(f"\n{msg}\n[fit] --allow-nonconverged: writing outputs anyway.")
+        with open(os.path.join(args.out, "NONCONVERGED.txt"), "w") as fh:
+            fh.write(msg + "\nEvery file in this directory comes from a fit "
+                           "that did not meet its tolerances.\n")
+
+    if truth_states is not None:
+        rec = evaluate.state_recovery(result.fit.M, truth_states)
         gs = [g for g in result.diagnostics.g] if result.diagnostics else None
         out["state_recovery"] = rec
         print(f"\n[truth] mean ARI vs ground-truth states: {rec['mean_ari']:.3f}")
-        if result.diagnostics is not None:
+        if truth is not None and result.diagnostics is not None:
             tr = evaluate.transition_recovery(
                 result.diagnostics.A, result.diagnostics.g, result.fit.M,
                 truth.states, truth.T_true, truth.scenario.n_states)
@@ -130,8 +221,8 @@ def main(argv=None):
               f"vs model {result.fit.objective:.6e}")
         print(f"[baseline] ARI(model, expression clustering) = "
               f"{out['baseline_vs_model']['mean_ari']:.3f}")
-        if truth is not None:
-            brec = evaluate.state_recovery(bmodel.numpy_memberships(), truth.states)
+        if truth_states is not None:
+            brec = evaluate.state_recovery(bmodel.numpy_memberships(), truth_states)
             out["baseline_state_recovery"] = brec
             print(f"[baseline] mean ARI vs truth: {brec['mean_ari']:.3f}")
 
@@ -162,4 +253,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    _out = main()
+    # non-zero exit so a pipeline or Makefile cannot walk past a refused fit
+    sys.exit(0 if _out.get("converged", True) else 1)

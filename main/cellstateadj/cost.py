@@ -11,7 +11,7 @@ Sinkhorn reaches a feasible plan (handled in :mod:`cellstateadj.reference`).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 
@@ -71,21 +71,66 @@ def _knn_from_distance(D: np.ndarray, k: int, axis: int) -> Tuple[np.ndarray, np
     return rows, cols
 
 
+def interval_cost_median(Za: np.ndarray, Zb: np.ndarray, dtau: float,
+                         max_cells: int = 2000, seed: int = 0) -> float:
+    """Median of the Eq. 1 cost for one interval, on a capped subsample.
+
+    Used to build the SHARED cost scale; subsampled because only the scale is
+    needed, not the full matrix.
+    """
+    rng = np.random.default_rng(seed)
+    ia = (np.sort(rng.choice(Za.shape[0], max_cells, replace=False))
+          if Za.shape[0] > max_cells else slice(None))
+    ib = (np.sort(rng.choice(Zb.shape[0], max_cells, replace=False))
+          if Zb.shape[0] > max_cells else slice(None))
+    med = float(np.median(adjacent_cost(Za[ia], Zb[ib], dtau)))
+    return med if np.isfinite(med) and med > 0 else 1.0
+
+
+def global_cost_scale(Z: Sequence[np.ndarray], tau: np.ndarray,
+                      max_cells: int = 2000, seed: int = 0) -> float:
+    """One cost scale shared by every interval.
+
+    [CRITICAL] This is what keeps Delta-tau alive.  Scaling each interval by its
+    own median cancels the ``/ dtau`` of Eq. 1 exactly; scaling them all by one
+    common constant preserves the ratios between intervals, so a long gap really
+    does cost differently from a short one.
+    """
+    meds = [interval_cost_median(Z[t], Z[t + 1], float(tau[t + 1] - tau[t]),
+                                 max_cells=max_cells, seed=seed)
+            for t in range(len(Z) - 1)]
+    s = float(np.median(meds)) if meds else 1.0
+    return s if np.isfinite(s) and s > 0 else 1.0
+
+
+def resolve_cost_scales(Z: Sequence[np.ndarray], tau: np.ndarray, mode: str,
+                        max_cells: int = 2000, seed: int = 0) -> List[float]:
+    """Per-interval scales implied by ``mode``; see :class:`CouplingConfig`."""
+    n_int = len(Z) - 1
+    if mode == "global":
+        return [global_cost_scale(Z, tau, max_cells, seed)] * n_int
+    if mode == "none":
+        return [1.0] * n_int
+    if mode == "per_interval":
+        return [interval_cost_median(Z[t], Z[t + 1], float(tau[t + 1] - tau[t]),
+                                     max_cells, seed) for t in range(n_int)]
+    raise ValueError(f"unknown cost_scale_mode {mode!r}")
+
+
 def build_support(
     Za: np.ndarray,
     Zb: np.ndarray,
     dtau: float,
     kappa: Optional[int] = None,
     dense: bool = False,
-    normalize: bool = True,
     cost_scale: Optional[float] = None,
 ) -> Tuple[Support, float]:
     """Build the (possibly sparse) support and its costs.
 
-    Returns ``(support, cost_scale)``.  When ``normalize`` is set, costs are
-    divided by ``cost_scale`` (the median of the *dense* cost, computed once and
-    reusable across an epsilon scan) so that a single epsilon is comparable
-    across intervals with different dtau and different local scales.
+    Returns ``(support, cost_scale)``.  Costs are divided by ``cost_scale``.
+    Pass the SHARED scale from :func:`resolve_cost_scales`; leaving it ``None``
+    falls back to this interval's own median, which cancels dtau and is only
+    correct for a single isolated interval.
 
     Symmetrisation matters: we take the union of the row-kNN and the column-kNN
     so that every source cell has candidate targets AND every target cell has
@@ -94,10 +139,10 @@ def build_support(
     """
     D = adjacent_cost(Za, Zb, dtau)
     if cost_scale is None:
-        cost_scale = float(np.median(D)) if normalize else 1.0
+        cost_scale = float(np.median(D))
         if not np.isfinite(cost_scale) or cost_scale <= 0:
             cost_scale = 1.0
-    if normalize:
+    if cost_scale != 1.0:
         D = D / cost_scale
 
     n, m = D.shape

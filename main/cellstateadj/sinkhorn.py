@@ -21,6 +21,18 @@ from .cost import Support
 from .utils import segment_logsumexp, segment_sum
 
 
+def _is_stalled(err_prev: float, err: float, rel_progress: float = 1e-3) -> bool:
+    """True when the marginal error stopped improving between checks.
+
+    A stalled error means Sinkhorn has reached the best plan the support allows
+    -- i.e. the support is infeasible.  An error still falling means it simply
+    ran out of iterations.
+    """
+    if not np.isfinite(err_prev):
+        return False
+    return bool((err_prev - err) <= rel_progress * max(err_prev, 1e-300))
+
+
 @dataclass
 class SinkhornResult:
     """A solved coupling on a fixed support.
@@ -38,7 +50,22 @@ class SinkhornResult:
     epsilon: float
     n_iter: int
     marginal_error: float         # max of the two L1 marginal errors
-    converged: bool
+    # Whether the error had stopped improving when we stopped.  This separates
+    # the two ways a plan can miss the tolerance, which need OPPOSITE fixes:
+    #   stalled=True  -> the support admits no balanced plan; grow kappa
+    #   stalled=False -> still converging; raise max_iter
+    stalled: bool = False
+    hit_max_iter: bool = False
+
+    def is_feasible(self, tol: float) -> bool:
+        """Whether the plan meets the caller's feasibility standard.
+
+        There is deliberately no `converged` flag with a baked-in threshold:
+        the feasibility question belongs to the caller (``CouplingConfig.
+        feasibility_tol``), and having two thresholds in two places is how they
+        drift apart.
+        """
+        return bool(self.marginal_error < tol)
 
     @property
     def nnz(self) -> int:
@@ -61,7 +88,7 @@ def sinkhorn_sparse(
     a: np.ndarray,
     b: np.ndarray,
     epsilon: float,
-    max_iter: int = 3000,
+    max_iter: int = 20000,
     tol: float = 1e-9,
     f_init: Optional[np.ndarray] = None,
     g_init: Optional[np.ndarray] = None,
@@ -92,11 +119,13 @@ def sinkhorn_sparse(
          else torch.as_tensor(g_init, dtype=td, device=dev).clone())
 
     err = float("inf")
+    err_prev = float("inf")
     it = 0
     for it in range(1, max_iter + 1):
         f = epsilon * (la - segment_logsumexp((-C + g[cols]) / epsilon, rows, n))
         g = epsilon * (lb - segment_logsumexp((-C + f[rows]) / epsilon, cols, m))
         if it % check_every == 0 or it == max_iter:
+            err_prev = err
             logP = (f[rows] + g[cols] - C) / epsilon
             P = torch.exp(logP)
             rs = segment_sum(P, rows, n)
@@ -115,7 +144,8 @@ def sinkhorn_sparse(
     return SinkhornResult(
         rows=support.rows, cols=support.cols, values=values, shape=support.shape,
         f=f.cpu().numpy(), g=g.cpu().numpy(), epsilon=epsilon, n_iter=it,
-        marginal_error=err, converged=bool(err < max(tol, 1e-12) * 10 or err < 1e-8),
+        marginal_error=err, stalled=_is_stalled(err_prev, err),
+        hit_max_iter=bool(it >= max_iter and err >= tol),
     )
 
 
@@ -124,7 +154,7 @@ def sinkhorn_dense(
     a: np.ndarray,
     b: np.ndarray,
     epsilon: float,
-    max_iter: int = 3000,
+    max_iter: int = 20000,
     tol: float = 1e-9,
     f_init: Optional[np.ndarray] = None,
     g_init: Optional[np.ndarray] = None,
@@ -145,11 +175,13 @@ def sinkhorn_dense(
          else torch.as_tensor(g_init, dtype=td, device=dev).clone())
 
     err = float("inf")
+    err_prev = float("inf")
     it = 0
     for it in range(1, max_iter + 1):
         f = epsilon * (torch.log(at) - torch.logsumexp((-Ct + g[None, :]) / epsilon, dim=1))
         g = epsilon * (torch.log(bt) - torch.logsumexp((-Ct + f[:, None]) / epsilon, dim=0))
         if it % check_every == 0 or it == max_iter:
+            err_prev = err
             P = torch.exp((f[:, None] + g[None, :] - Ct) / epsilon)
             err = float(max((P.sum(1) - at).abs().sum(), (P.sum(0) - bt).abs().sum()))
             if err < tol:
@@ -163,5 +195,6 @@ def sinkhorn_dense(
     return SinkhornResult(
         rows=rows, cols=cols, values=P.ravel().copy(), shape=(n, m),
         f=f.cpu().numpy(), g=g.cpu().numpy(), epsilon=epsilon, n_iter=it,
-        marginal_error=err, converged=bool(err < 1e-8),
+        marginal_error=err, stalled=_is_stalled(err_prev, err),
+        hit_max_iter=bool(it >= max_iter and err >= tol),
     )

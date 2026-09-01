@@ -98,16 +98,36 @@ def initialize_logits(
 
 @dataclass
 class FitResult:
+    """Outcome of one fit.
+
+    ``status`` distinguishes three genuinely different endings, which an earlier
+    version conflated into ``converged=True``:
+
+    * ``converged``          -- the objective and the memberships both settled;
+    * ``line_search_failed`` -- no step along the search direction decreased the
+      complete objective.  The tolerances were NOT met; the iterate is simply
+      stuck.  This is a result to investigate (ill-conditioning, a too-tight
+      numerical floor, saturated memberships), not a success.
+    * ``max_iter``           -- the iteration budget ran out.
+
+    ``grad_norm`` is recorded so a stuck fit can be told from a flat one.
+    """
+
     model: CoarseGrainModel
     M: List[np.ndarray]
     terms: ObjectiveTerms
     history: List[dict] = field(default_factory=list)
-    converged: bool = False
+    status: str = "max_iter"
     monotone: bool = True
     n_iter: int = 0
     seed: int = 0
     wall_time: float = 0.0
+    grad_norm: float = float("nan")
     restarts: List[dict] = field(default_factory=list)
+
+    @property
+    def converged(self) -> bool:
+        return self.status == "converged"
 
     @property
     def objective(self) -> float:
@@ -122,8 +142,10 @@ class FitResult:
 
     def summary(self) -> dict:
         d = self.terms.as_dict()
-        d.update(converged=self.converged, monotone=self.monotone,
-                 n_iter=self.n_iter, wall_time=self.wall_time, seed=self.seed)
+        d.update(status=self.status, converged=self.converged,
+                 monotone=self.monotone, n_iter=self.n_iter,
+                 grad_norm=self.grad_norm, wall_time=self.wall_time,
+                 seed=self.seed)
         return d
 
 
@@ -217,7 +239,8 @@ def _run_full_gradient(model: CoarseGrainModel, opt: OptimConfig,
     history: List[dict] = []
     step = opt.step_init
     monotone = True
-    converged = False
+    status = "max_iter"
+    grad_norm = float("nan")
     lbfgs = _LBFGS(opt.lbfgs_memory) if opt.direction == "lbfgs" else None
 
     loss, terms = model.objective(chunk=chunk)
@@ -235,8 +258,9 @@ def _run_full_gradient(model: CoarseGrainModel, opt: OptimConfig,
         gnorm2 = _flat_grad_norm_sq(grads)
         if not np.isfinite(gnorm2):
             raise FloatingPointError("non-finite gradient")
+        grad_norm = float(np.sqrt(gnorm2))
         if gnorm2 == 0.0:
-            converged = True
+            status = "converged"
             break
 
         U_old = model.clone_U()
@@ -275,8 +299,14 @@ def _run_full_gradient(model: CoarseGrainModel, opt: OptimConfig,
                 lbfgs = _LBFGS(opt.lbfgs_memory)
                 prev_flat_U = prev_flat_g = None
                 continue
-            converged = True
+            # steepest descent could not decrease the objective either: the
+            # iterate is stuck, not converged.  Tolerances were not met.
+            status = "line_search_failed"
             step = s
+            if opt.verbose:
+                print(f"  [warn] line search failed at iteration {it} with "
+                      f"||grad||={grad_norm:.3e}; stopping without meeting the "
+                      f"convergence tolerances")
             break
 
         prev_flat_U, prev_flat_g = flat_U, flat_g
@@ -304,13 +334,14 @@ def _run_full_gradient(model: CoarseGrainModel, opt: OptimConfig,
             stalled = 0
         if (rel < opt.tol_objective and dM < opt.tol_membership) or \
                 stalled >= opt.patience:
-            converged = True
+            status = "converged"
             break
 
     loss, terms = model.objective(chunk=chunk)
     return FitResult(model=model, M=model.numpy_memberships(), terms=terms,
-                     history=history, converged=converged, monotone=monotone,
-                     n_iter=it, seed=opt.seed, wall_time=time.time() - t0)
+                     history=history, status=status, monotone=monotone,
+                     n_iter=it, seed=opt.seed, grad_norm=grad_norm,
+                     wall_time=time.time() - t0)
 
 
 def _run_block_coordinate(model: CoarseGrainModel, opt: OptimConfig,
@@ -324,7 +355,7 @@ def _run_block_coordinate(model: CoarseGrainModel, opt: OptimConfig,
     t0 = time.time()
     history: List[dict] = []
     monotone = True
-    converged = False
+    status = "max_iter"
     step = {t: opt.step_init for t in range(model.T)}
 
     loss, terms = model.objective(chunk=chunk)
@@ -334,6 +365,12 @@ def _run_block_coordinate(model: CoarseGrainModel, opt: OptimConfig,
     for it in range(1, opt.max_iter + 1):
         M_before = [m.detach().clone() for m in model.memberships()]
         order = list(range(model.T)) + list(range(model.T - 2, -1, -1))
+        # Count the blocks actually ATTEMPTED this iteration (those with a
+        # nonzero gradient).  A forward+backward sweep visits 2T-1 blocks, not
+        # 2T, and blocks with a zero gradient are skipped -- so a fixed 2T
+        # threshold can never be reached and the failure is never detected.
+        n_attempted = 0
+        n_stuck = 0
         for _sweep in range(opt.n_sweeps_per_iter):
             for t in order:
                 model.zero_grad()
@@ -346,6 +383,7 @@ def _run_block_coordinate(model: CoarseGrainModel, opt: OptimConfig,
                 gnorm2 = float((gt ** 2).sum())
                 if gnorm2 == 0.0:
                     continue
+                n_attempted += 1
                 base = float(loss.detach())
                 U_t_old = model.U[t].detach().clone()
                 s = step[t]
@@ -369,6 +407,7 @@ def _run_block_coordinate(model: CoarseGrainModel, opt: OptimConfig,
                         break
                     s *= opt.step_shrink
                 step[t] = s * opt.step_grow if accepted else s
+                n_stuck += 0 if accepted else 1
 
         loss, terms = model.objective(chunk=chunk)
         obj = float(loss.detach())
@@ -383,15 +422,26 @@ def _run_block_coordinate(model: CoarseGrainModel, opt: OptimConfig,
         history.append(rec)
         if opt.verbose and (it % opt.log_every == 0):
             print(_log_line(it, terms, rec))
+        # Failure is checked BEFORE convergence.  When every block refuses every
+        # step the objective and the memberships are both exactly unchanged, so
+        # the convergence test (rel == 0, dM == 0) fires first and reports a
+        # completely stuck optimiser as "converged".
+        if n_attempted > 0 and n_stuck >= n_attempted:
+            status = "line_search_failed"
+            if opt.verbose:
+                print(f"  [warn] all {n_attempted} attempted block line searches "
+                      f"failed at iteration {it}; stopping without meeting the "
+                      f"tolerances")
+            break
         stalled = stalled + 1 if rel < opt.tol_objective else 0
         if (rel < opt.tol_objective and dM < opt.tol_membership) or \
                 stalled >= opt.patience:
-            converged = True
+            status = "converged"
             break
 
     loss, terms = model.objective(chunk=chunk)
     return FitResult(model=model, M=model.numpy_memberships(), terms=terms,
-                     history=history, converged=converged, monotone=monotone,
+                     history=history, status=status, monotone=monotone,
                      n_iter=it, seed=opt.seed, wall_time=time.time() - t0)
 
 

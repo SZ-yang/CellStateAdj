@@ -79,9 +79,13 @@ def run_pipeline(
         if verbose:
             print(f"[2/4] building reference chain at eps={cfg.coupling.epsilon}")
         chain = build_reference_chain(Z, data.tau, cfg.coupling, verbose=verbose)
-        if not chain.feasible and verbose:
-            print("  WARNING: at least one interval did not reach a feasible "
-                  "balanced plan; report kappa sensitivity")
+    # Only reachable with on_infeasible='warn' or a caller-supplied chain:
+    # build_reference_chain raises by default.  CoarseGrainModel refuses such a
+    # chain too, so this is a heads-up rather than the guard itself.
+    if not chain.feasible:
+        print(f"  WARNING: intervals {chain.infeasible_intervals()} exceed "
+              f"feasibility_tol {chain.feasibility_tol:.1e}. A_t will not be "
+              f"row-stochastic and the transition numbers below are invalid.")
 
     if verbose:
         print(f"[3/4] fitting K={cfg.model.K} states "
@@ -137,34 +141,40 @@ def lambda_sweep(
     return out
 
 
-def k_selection(
+def k_diagnostic_sweep(
     chain: ReferenceChain,
     Z: Sequence[np.ndarray],
     cfg: PipelineConfig,
     Ks: Sequence[int],
     verbose: int = 1,
 ) -> List[dict]:
-    """Sweep K with the fingerprint terms OFF (spec 1.15, 1.20).
+    """Sweep K on TRAINING data.  This is a diagnostic, NOT a selector.
 
-    L_pm must NOT enter K selection: it systematically favours coarser
-    neighbouring state spaces and is exactly zero at K = 1.
+    Training compression decreases monotonically in K and expression coherence
+    improves with it, so the best value here is always the largest K tried.
+    Nothing in this output can choose K.
 
-    NOTE (unresolved spec item, handoff s7/s10): the held-out compression
-    protocol is not decided yet.  Option (a) refits P^ref on a reduced cell set
-    and evaluates on held-out pairs; option (b) holds out whole duplicate
-    samples and evaluates the transferred state map.  This function reports
-    training compression only.  Pick a protocol, document it, and do not switch
-    silently.
+    Use :func:`cellstateadj.selection.select_K`, which implements the decided
+    held-out protocol (b): hold out whole duplicate samples and score the
+    transferred state map.  This function exists only to show the training
+    curve alongside it.
+
+    The fingerprint terms are forced off regardless of ``cfg``: L_pm must never
+    enter K selection, since it systematically favours coarser neighbouring
+    state spaces and is exactly zero at K = 1 (Degeneracy 3).
     """
     from dataclasses import replace as dc_replace
     out = []
     for K in Ks:
         mcfg = dc_replace(cfg.model, K=int(K), lambda_plus=0.0, lambda_minus=0.0)
         if verbose:
-            print(f"[K selection] K={K} (L_pm excluded by construction)")
+            print(f"[K sweep, TRAINING ONLY] K={K} (L_pm excluded by construction)")
         res = fit(chain, Z, mcfg, cfg.optim)
         rec = res.summary()
         rec.update(K=int(K), min_state_mass=float(np.min(res.terms.g_min)),
                    k_eff_mean=float(np.mean(res.terms.k_eff)))
         out.append(rec)
+    if verbose:
+        print("[K sweep] training curve only -- cannot select K. "
+              "Use selection.select_K for the held-out protocol.")
     return out

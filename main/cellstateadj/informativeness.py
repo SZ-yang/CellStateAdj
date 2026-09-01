@@ -27,12 +27,12 @@ Quantities computed per interval and per epsilon:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from .config import CouplingConfig, DEFAULT_EPSILON_GRID
-from .cost import Support, build_support, perturb_cost
+from .cost import Support, build_support, perturb_cost, resolve_cost_scales
 from .sinkhorn import SinkhornResult, sinkhorn_dense, sinkhorn_sparse
 from .utils import entropy, uniform_weights
 
@@ -157,28 +157,78 @@ class EpsilonScanResult:
         stability under both resampling and cost perturbation.  No single value
         is treated as uniquely correct -- an interval is returned and results
         should be reported across it.
+
+        A criterion that could not be EVALUATED (NaN) counts as FAILED, not as
+        passed.  The spec requires positive evidence of stability; treating a
+        missing measurement as satisfying it is how an epsilon gets declared
+        admissible with no stability evidence behind it at all.  Which criteria
+        went unevaluated is reported in ``unevaluated``.
         """
         ok = np.ones(len(self.epsilons), dtype=bool)
-        ok &= self.mean_curve("I_cell_normalized") >= min_norm_info
+        unevaluated: Dict[str, int] = {}
+
+        def _apply(curve: np.ndarray, threshold: float, name: str) -> None:
+            nonlocal ok
+            nan = np.isnan(curve)
+            if nan.any():
+                unevaluated[name] = int(nan.sum())
+            ok = ok & np.where(nan, False, curve >= threshold)
+
+        _apply(self.mean_curve("I_cell_normalized"), min_norm_info, "I_cell_normalized")
         if "I_fingerprint_plus" in self.metrics:
-            ok &= self.mean_curve("I_fingerprint_plus") >= min_fingerprint_info
+            _apply(self.mean_curve("I_fingerprint_plus"), min_fingerprint_info,
+                   "I_fingerprint_plus")
         for key in ("stability_resample", "stability_cost"):
             if key in self.metrics:
-                c = self.mean_curve(key)
-                ok &= np.where(np.isnan(c), True, c >= min_stability)
+                _apply(self.mean_curve(key), min_stability, key)
         if "feasible" in self.metrics:
-            ok &= self.mean_curve("feasible") > 0.999
+            _apply(self.mean_curve("feasible"), 0.999, "feasible")
+
         idx = np.flatnonzero(ok)
         if idx.size == 0:
             return {"window": None, "epsilon_star": None,
+                    "unevaluated": unevaluated,
                     "reason": "no epsilon satisfies all criteria -- "
-                              "the informative window may not exist at this spacing"}
-        lo, hi = float(self.epsilons[idx[0]]), float(self.epsilons[idx[-1]])
-        # geometric centre of the admissible window
-        star = float(np.exp(0.5 * (np.log(lo) + np.log(hi))))
-        star = float(self.epsilons[np.argmin(np.abs(np.log(self.epsilons) - np.log(star)))])
-        return {"window": (lo, hi), "epsilon_star": star,
-                "admissible": self.epsilons[idx].tolist()}
+                              "the informative window may not exist at this spacing"
+                              + (f" (note: {unevaluated} could not be evaluated "
+                                 f"and were counted as failures)" if unevaluated else "")}
+
+        # The admissible set need not be contiguous.  Taking (first, last) as a
+        # window and picking its geometric centre can land on an epsilon that
+        # FAILED -- e.g. pass = [True, False, True] would recommend the middle
+        # value.  So: split into contiguous runs, keep the longest (ties -> the
+        # one with the best I_cell_normalized), and choose epsilon_star from
+        # inside that run, always a value that actually passed.
+        order = np.argsort(self.epsilons)          # runs are in epsilon order
+        ok_sorted = ok[order]
+        runs, start = [], None
+        for pos in range(len(order)):
+            if ok_sorted[pos] and start is None:
+                start = pos
+            if start is not None and (pos == len(order) - 1 or not ok_sorted[pos + 1]):
+                runs.append((start, pos))
+                start = None
+
+        info = self.mean_curve("I_cell_normalized")[order]
+        def _run_key(r):
+            lo_i, hi_i = r
+            seg = info[lo_i:hi_i + 1]
+            return (hi_i - lo_i + 1, float(np.nanmax(seg)) if seg.size else -np.inf)
+        best_run = max(runs, key=_run_key)
+        lo_i, hi_i = best_run
+        run_idx = order[lo_i:hi_i + 1]
+        run_eps = self.epsilons[run_idx]
+
+        # geometric centre of the run, snapped to the nearest ADMISSIBLE value
+        target = float(np.exp(0.5 * (np.log(run_eps[0]) + np.log(run_eps[-1]))))
+        star = float(run_eps[np.argmin(np.abs(np.log(run_eps) - np.log(target)))])
+
+        return {"window": (float(run_eps[0]), float(run_eps[-1])),
+                "epsilon_star": star,
+                "admissible": sorted(float(e) for e in self.epsilons[idx]),
+                "admissible_window": [float(e) for e in run_eps],
+                "n_admissible_runs": len(runs),
+                "unevaluated": unevaluated}
 
 
 def _provisional_labels(Z: np.ndarray, K: int, seed: int) -> np.ndarray:
@@ -224,6 +274,8 @@ def epsilon_scan(
     resample_fraction: float = 0.7,
     cost_perturbation: float = 0.05,
     replicate: Optional[Sequence[np.ndarray]] = None,
+    replicate_paired: bool = True,
+    cost_scales: Optional[Sequence[float]] = None,
     seed: int = 0,
     verbose: int = 1,
 ) -> EpsilonScanResult:
@@ -233,7 +285,43 @@ def epsilon_scan(
     ``replicate`` is given); fingerprints are then compared on the cells present
     in both fits, against a provisional target clustering that is fixed once on
     the full data so the two fits share a label space.
+
+    ``replicate_paired`` (default True) holds the SAME replicate group out at
+    both ends of an interval.  WOT ran parallel time courses, so a replicate
+    label plausibly tracks one culture lineage across time; drawing the source
+    and target groups independently would then leave the same experimental unit
+    on both sides of the split and overstate stability.  Set it False only if
+    the labels really are independent wells harvested per timepoint.  Groups
+    come from the labels shared by both ends of the interval; if fewer than two
+    are shared, no paired hold-out exists and ``stability_resample`` is left
+    unevaluated (NaN, which fails admissibility) rather than falling back to an
+    unrelated target group.
+
+    [CRITICAL] With replicate labels the subsets are ENUMERATED -- one per
+    replicate group, deterministically -- and ``n_resample`` does not apply.
+    Drawing groups at random duplicates them: with two groups, two independent
+    draws of one group coincide about half the time, the two "resampled"
+    datasets are bit-identical, and the agreement is exactly 1.0 for no reason
+    at all.  Replicate subsets are also disjoint, so there is no shared cell for
+    a pairwise comparison; each subset is instead scored against the full
+    coupling on its own cells and the scores averaged over ALL subsets.
+    ``stability_is_vs_full`` records which of the two comparisons was used
+    (1.0 = against the full coupling, 0.0 = pairwise between overlapping
+    subsets), and ``n_resample_subsets`` the number actually evaluated.
+
+    Every resampled and cost-perturbed plan is held to the same
+    ``cfg.feasibility_tol`` as the main one, and each resampled support grows its
+    own kappa: an infeasible plan is not a noisy coupling, it is not a coupling,
+    and two of them agreeing is not stability.  ``n_resample_feasible`` records
+    how many survived at each epsilon.
+
+    The support is grown until a balanced plan exists, using the same helper and
+    the same ``cfg.feasibility_tol`` as the final chain builder, so an epsilon
+    cannot pass here under a weaker standard than it will later face.
     """
+    from .reference import (InfeasibleCouplingError,
+                            SinkhornConvergenceError, solve_interval)
+
     rng = np.random.default_rng(seed)
     Z = [np.asarray(z, dtype=np.float64) for z in Z]
     tau = np.asarray(tau, dtype=float)
@@ -241,13 +329,31 @@ def epsilon_scan(
     intervals = list(range(T - 1)) if intervals is None else list(intervals)
     epsilons = np.asarray(list(epsilons), dtype=float)
 
+    # One scale for every interval, matching build_reference_chain: a
+    # per-interval median would cancel dtau and make the scan blind to spacing.
+    #
+    # ``cost_scales`` lets a caller pin the scale computed from a DIFFERENT
+    # series -- the delta-tau study needs this, because recomputing the scale
+    # per stride would make stride-1 and stride-4 differ by cost normalisation
+    # as well as by spacing.
+    if cost_scales is None:
+        scales = resolve_cost_scales(Z, tau, cfg.cost_scale_mode)
+    else:
+        scales = [float(x) for x in cost_scales]
+        if len(scales) != len(Z) - 1:
+            raise ValueError(
+                f"cost_scales must have one entry per interval "
+                f"({len(Z) - 1}), got {len(scales)}")
+
     labels = [_provisional_labels(Z[t], provisional_K, seed=seed + t) for t in range(T)]
     Kprov = provisional_K
 
     names = ["I_cell", "I_cell_normalized", "I_fingerprint_plus",
              "I_fingerprint_minus", "eff_targets", "pairwise_kl_median",
              "pairwise_kl_p90", "marginal_error", "feasible", "n_iter",
-             "stability_resample", "stability_cost"]
+             "stability_resample", "stability_cost",
+             "n_resample_subsets", "n_resample_feasible",
+             "marginal_error_perturbed", "stability_is_vs_full"]
     metrics = {k: np.full((len(epsilons), len(intervals)), np.nan) for k in names}
     pairwise: Dict[int, Dict[float, np.ndarray]] = {t: {} for t in intervals}
 
@@ -255,25 +361,115 @@ def epsilon_scan(
         dtau = float(tau[t + 1] - tau[t])
         a = uniform_weights(Z[t].shape[0])
         b = uniform_weights(Z[t + 1].shape[0])
-        sup, scale = build_support(Z[t], Z[t + 1], dtau,
-                                   kappa=None if cfg.support == "dense" else cfg.kappa,
-                                   dense=(cfg.support == "dense"),
-                                   normalize=cfg.normalize_cost)
+        # Size the support at the LARGEST epsilon on the grid.
+        #
+        # Whether a support admits a balanced plan at all is a combinatorial
+        # property of the bipartite graph (a Hall-type condition on the
+        # marginals) and does not depend on epsilon.  What DOES depend on
+        # epsilon is conditioning: at small epsilon exp(-C/eps) underflows and
+        # Sinkhorn cannot hit the tolerance no matter how good the support is.
+        #
+        # Sizing at the smallest epsilon therefore conflates the two: the solve
+        # fails for numerical reasons, kappa growth is abandoned, and every
+        # epsilon is then scored on an under-sized support -- so the scan can
+        # report "no informative window" when a perfectly good one exists.
+        # Sizing at the largest epsilon isolates the combinatorial question,
+        # which is the one that determines kappa.
+        try:
+            _, sup, scale = solve_interval(
+                Z[t], Z[t + 1], dtau, a, b,
+                replace(cfg, epsilon=float(np.max(epsilons)),
+                        on_infeasible="warn"),
+                cost_scale=scales[t], interval=t, verbose=max(0, verbose - 1),
+            )
+        except (InfeasibleCouplingError, SinkhornConvergenceError) as exc:
+            # The scan must never abort: an epsilon that cannot be solved is a
+            # RESULT to record (feasible=0 for that row), not a crash.
+            if verbose:
+                print(f"  [interval {t}] support sizing at eps="
+                      f"{np.max(epsilons):g} did not settle ({type(exc).__name__}); "
+                      f"falling back to kappa={cfg.kappa} and reporting "
+                      f"feasibility per epsilon")
+            sup, scale = build_support(
+                Z[t], Z[t + 1], dtau,
+                kappa=None if cfg.support == "dense" else cfg.kappa,
+                dense=(cfg.support == "dense"), cost_scale=scales[t])
         sup_pert = perturb_cost(sup, cost_perturbation, rng)
 
         if verbose:
             print(f"[eps-scan] interval {t} (tau {tau[t]:g}->{tau[t+1]:g}, "
                   f"dtau={dtau:g}) n={Z[t].shape[0]}x{Z[t+1].shape[0]} "
-                  f"nnz={sup.nnz} cost_scale={scale:.3g}")
+                  f"nnz={sup.nnz} kappa={sup.kappa} cost_scale={scale:.3g}")
 
-        # resampled subsets, reused across epsilon so the comparison is clean
+        # resampled subsets, reused across epsilon so the comparison is clean.
+        #
+        # [CRITICAL] Each subset grows its OWN kappa.  A subset has fewer cells,
+        # so the kappa that made the FULL support feasible can leave the subset
+        # without a balanced plan -- and an infeasible plan still produces
+        # fingerprints, which still agree with each other, which still scores as
+        # perfect stability.  A completely invalid pair of plans could therefore
+        # push an epsilon over the stability threshold and into the admissible
+        # window.  Feasibility is a combinatorial property of the support, so
+        # kappa is grown once at the largest epsilon, exactly as for the main
+        # support above.
+        # [CRITICAL] With replicate labels the subsets are ENUMERATED, not
+        # drawn.  Randomly drawing one of two groups per resample draws the SAME
+        # group twice about half the time; the two "resampled" datasets are then
+        # bit-identical and agree perfectly, so stability_resample came out at
+        # exactly 1.0 on 7 of 12 seeds of the same data -- and when the draws
+        # differed, the two subsets were disjoint, the pairwise comparison had
+        # no shared cells to run on, and the fallback scored only the FIRST
+        # subset against the full coupling and ignored the second.  Neither
+        # number measured stability, and both could admit an epsilon.
+        #
+        # One subset per replicate group, deterministically, is the honest
+        # version of "resample the replicates" when the replicates are the
+        # sampling unit: it uses every group exactly once and cannot duplicate.
+        # ``n_resample`` therefore does not apply here -- the number of subsets
+        # is the number of replicate groups.
+        #
+        # Each subset also grows its OWN kappa.  A subset has fewer cells, so
+        # the kappa that made the FULL support feasible can leave it without a
+        # balanced plan -- and an infeasible plan still produces fingerprints,
+        # which still agree with each other, which still scores as stable.
+        # Feasibility is combinatorial, so kappa is grown once at the largest
+        # epsilon, exactly as for the main support above.
         subsets = []
-        for r in range(n_resample):
+        group_ids: List[object] = []
+        draws = []
+        if replicate is not None:
+            groups_a = np.unique(replicate[t])
+            groups_b = np.unique(replicate[t + 1])
+            if replicate_paired:
+                shared = np.intersect1d(groups_a, groups_b)
+                if shared.size < 2:
+                    # No group is present at BOTH ends, so no paired hold-out
+                    # exists.  Silently drawing an unrelated target group would
+                    # compare two different cultures and call the disagreement
+                    # "instability"; leaving stability unevaluated (NaN) is the
+                    # honest result, and NaN already fails admissibility.
+                    if verbose:
+                        print(f"  [interval {t}] paired resampling impossible: "
+                              f"{shared.size} replicate group(s) shared between "
+                              f"tau={tau[t]:g} and tau={tau[t+1]:g}; "
+                              f"stability_resample left unevaluated")
+                else:
+                    for gid in shared:
+                        draws.append((gid, np.asarray([gid]), np.asarray([gid])))
+            else:
+                # independent wells per timepoint: pair them up by position,
+                # still one subset per group and still without replacement
+                n_pair = min(len(groups_a), len(groups_b))
+                for j in range(n_pair):
+                    draws.append((f"{groups_a[j]}|{groups_b[j]}",
+                                  np.asarray([groups_a[j]]),
+                                  np.asarray([groups_b[j]])))
+        else:
+            for r in range(n_resample):
+                draws.append((r, None, None))
+
+        for (gid, ga, gb) in draws:
             if replicate is not None:
-                groups_a = np.unique(replicate[t])
-                groups_b = np.unique(replicate[t + 1])
-                ga = rng.choice(groups_a, size=max(1, len(groups_a) // 2), replace=False)
-                gb = rng.choice(groups_b, size=max(1, len(groups_b) // 2), replace=False)
                 ia = np.flatnonzero(np.isin(replicate[t], ga))
                 ib = np.flatnonzero(np.isin(replicate[t + 1], gb))
             else:
@@ -283,11 +479,26 @@ def epsilon_scan(
                 ib = np.sort(rng.choice(Z[t + 1].shape[0],
                                         size=max(2, int(resample_fraction * Z[t + 1].shape[0])),
                                         replace=False))
-            sub_sup, _ = build_support(Z[t][ia], Z[t + 1][ib], dtau,
-                                       kappa=None if cfg.support == "dense" else cfg.kappa,
-                                       dense=(cfg.support == "dense"),
-                                       normalize=cfg.normalize_cost, cost_scale=scale)
+            if len(ia) < 2 or len(ib) < 2:
+                continue
+            try:
+                _, sub_sup, _ = solve_interval(
+                    Z[t][ia], Z[t + 1][ib], dtau,
+                    uniform_weights(len(ia)), uniform_weights(len(ib)),
+                    replace(cfg, epsilon=float(np.max(epsilons)),
+                            on_infeasible="warn"),
+                    cost_scale=scale, interval=t, verbose=0,
+                )
+            except (InfeasibleCouplingError, SinkhornConvergenceError):
+                sub_sup, _ = build_support(
+                    Z[t][ia], Z[t + 1][ib], dtau,
+                    kappa=None if cfg.support == "dense" else sup.kappa,
+                    dense=(cfg.support == "dense"), cost_scale=scale)
             subsets.append((ia, ib, sub_sup))
+            group_ids.append(gid)
+        if len(set(map(str, group_ids))) != len(group_ids):   # cannot happen
+            raise AssertionError(f"duplicate resample subsets: {group_ids}")
+        metrics["n_resample_subsets"][:, ii] = float(len(subsets))
 
         f0 = g0 = None
         for ei, eps in enumerate(sorted(epsilons, reverse=True)):
@@ -314,13 +525,26 @@ def epsilon_scan(
                 metrics["pairwise_kl_p90"][e_idx, ii] = float(np.percentile(kl, 90))
 
             # -- stability under resampling -------------------------------
+            #
+            # Every resampled plan must clear the SAME feasibility_tol as the
+            # main one.  A plan whose marginals are wrong is not a worse
+            # estimate of the coupling, it is not the coupling at all, and two
+            # such plans agreeing with each other is not evidence of stability.
+            main_feasible = res.marginal_error < cfg.feasibility_tol
             agrees = []
             Fsubs = []
+            n_sub_feasible = 0
             for (ia, ib, sub_sup) in subsets:
                 sub_res = _solve(sub_sup, uniform_weights(len(ia)),
                                  uniform_weights(len(ib)), eps, cfg)
+                if sub_res.marginal_error >= cfg.feasibility_tol:
+                    continue
+                n_sub_feasible += 1
                 Fsub = outgoing_fingerprints(sub_res, labels[t + 1][ib], Kprov)
                 Fsubs.append((ia, Fsub))
+            metrics["n_resample_feasible"][e_idx, ii] = float(n_sub_feasible)
+            if not main_feasible:
+                Fsubs = []
             for x in range(len(Fsubs)):
                 for y in range(x + 1, len(Fsubs)):
                     ia_x, Fx = Fsubs[x]
@@ -329,16 +553,29 @@ def epsilon_scan(
                     if len(common) >= 10:
                         w = uniform_weights(len(common))
                         agrees.append(_fingerprint_agreement(Fx[px], Fy[py], w))
-            if not agrees and len(Fsubs) >= 1:
-                ia_x, Fx = Fsubs[0]
-                agrees.append(_fingerprint_agreement(Fx, Fp[ia_x], uniform_weights(len(ia_x))))
+            if agrees:
+                metrics["stability_is_vs_full"][e_idx, ii] = 0.0
+            if not agrees:
+                # Replicate subsets are DISJOINT by construction, so there is no
+                # shared cell to compare them on.  Score each subset against the
+                # full coupling restricted to that subset's own cells and
+                # average -- every subset contributes, which the old code did
+                # not do: it scored Fsubs[0] alone and discarded the rest.
+                for ia_x, Fx in Fsubs:
+                    agrees.append(_fingerprint_agreement(
+                        Fx, Fp[ia_x], uniform_weights(len(ia_x))))
+                metrics["stability_is_vs_full"][e_idx, ii] = 1.0
             if agrees:
                 metrics["stability_resample"][e_idx, ii] = float(np.nanmean(agrees))
 
             # -- stability under cost perturbation ------------------------
+            # Same rule: an infeasible perturbed plan leaves this unevaluated
+            # rather than scoring it.
             res_p = _solve(sup_pert, a, b, eps, cfg)
-            Fp_p = outgoing_fingerprints(res_p, labels[t + 1], Kprov)
-            metrics["stability_cost"][e_idx, ii] = _fingerprint_agreement(Fp, Fp_p, a)
+            metrics["marginal_error_perturbed"][e_idx, ii] = res_p.marginal_error
+            if main_feasible and res_p.marginal_error < cfg.feasibility_tol:
+                Fp_p = outgoing_fingerprints(res_p, labels[t + 1], Kprov)
+                metrics["stability_cost"][e_idx, ii] = _fingerprint_agreement(Fp, Fp_p, a)
 
             if verbose > 1:
                 print(f"    eps={eps:<8g} Ibar={metrics['I_cell_normalized'][e_idx, ii]:.4f} "
@@ -352,4 +589,12 @@ def epsilon_scan(
                              notes={"cfg": cfg.__dict__.copy(),
                                     "resample_fraction": resample_fraction,
                                     "cost_perturbation": cost_perturbation,
-                                    "replicate_based": replicate is not None})
+                                    "replicate_based": replicate is not None,
+                                    "resample_mode": ("enumerated replicate "
+                                                      "groups"
+                                                      if replicate is not None
+                                                      else "random cell subsets"),
+                                    "replicate_paired": replicate_paired,
+                                    "cost_scale_mode": cfg.cost_scale_mode,
+                                    "cost_scales_supplied": cost_scales is not None,
+                                    "cost_scales": scales})

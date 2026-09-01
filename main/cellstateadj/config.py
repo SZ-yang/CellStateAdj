@@ -34,17 +34,50 @@ class CouplingConfig:
     """Cell-level reference couplings (spec 1.3-1.5)."""
 
     epsilon: float = 0.05
-    # Cost is C_ij = ||z_i - z_j||^2 / dtau (Eq. 1).  With `normalize_cost` the
-    # cost of each interval is divided by its median before epsilon is applied,
-    # so a single epsilon is comparable across intervals and across datasets.
-    normalize_cost: bool = True
+    # Cost is C_ij = ||z_i - z_j||^2 / dtau (Eq. 1), then divided by a scale so
+    # that one epsilon is portable across datasets.
+    #
+    # [CRITICAL] The scale MUST be shared across intervals.  Dividing each
+    # interval by its own median gives
+    #     (||dz||^2 / dtau) / median(||dz||^2 / dtau) = ||dz||^2 / median(||dz||^2)
+    # in which dtau cancels *exactly* -- Eq. 1 is silently reduced to a plain
+    # squared distance and the relative weighting between a short and a long
+    # interval is destroyed.  That breaks unequal spacing (WOT has 6h gaps
+    # between days 8-9 against 12h elsewhere) and it invalidates the delta-tau
+    # study, which is the whole point of varying the spacing.
+    #   'global'       -- one scale for all intervals (default; keeps dtau)
+    #   'per_interval' -- the cancelling behaviour, kept ONLY as a documented
+    #                     sensitivity analysis.  Do not use for delta-tau work.
+    #   'none'         -- raw costs in z-units; epsilon is then dataset-specific
+    cost_scale_mode: str = "global"
     support: str = "knn"          # 'dense' | 'knn'
     kappa: int = 50               # neighbours per cell, symmetrised both ways
     kappa_max: int = 400          # grow until a balanced plan is feasible
     kappa_growth: float = 2.0
-    max_iter: int = 3000
-    tol: float = 1e-9             # marginal L1 error
-    feasibility_tol: float = 1e-6
+    # Sinkhorn iterations.  A shared cost scale means some intervals run at a
+    # smaller *effective* epsilon than a per-interval scale gave them, and those
+    # need noticeably more iterations -- 3000 was too few even for n=40 dense.
+    max_iter: int = 20000
+    # Sinkhorn stopping target on the marginal L1 error.  Chasing 1e-9 wastes
+    # iterations: the solver only has to be comfortably better than
+    # feasibility_tol, and the effective target is min(tol, feasibility_tol/10).
+    tol: float = 1e-7
+    # A restricted support need not admit ANY balanced plan.  This is the single
+    # threshold that decides feasibility everywhere; Sinkhorn reports the raw
+    # marginal error and callers judge against this.
+    #
+    # Calibration: the marginal error propagates to the induced transition map as
+    #     |A_t(k,:).sum() - 1|  =  |M_t^T(rowsums(P) - a_t)|_k / g_tk
+    #                           <=  marginal_error / g_tk
+    # so it is AMPLIFIED for low-mass states.  At 1e-5 with a state of mass 1e-2
+    # the row sums are off by ~1e-3, which is negligible; the genuinely broken
+    # case that motivates the guard had a marginal error of 0.5.  Tighten this
+    # if you care about very low-mass states.
+    feasibility_tol: float = 1e-5
+    # What to do when kappa_max is reached and the plan is still infeasible.
+    # An infeasible coupling breaks T_t 1 = g_t, so A_t stops being stochastic
+    # and every downstream transition number is wrong -- default to refusing.
+    on_infeasible: str = "raise"  # 'raise' | 'dense' | 'warn'
     dtype: str = "float64"
     device: str = "cpu"
 

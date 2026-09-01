@@ -81,7 +81,26 @@ class CoarseGrainModel:
         Z: Sequence[np.ndarray],
         cfg: ModelConfig = ModelConfig(),
         U_init: Optional[Sequence[np.ndarray]] = None,
+        allow_infeasible: bool = False,
     ) -> None:
+        # Guard at the point of use: an unbalanced P^ref makes T_t 1 != g_t, so
+        # A_t is not row-stochastic and every transition quantity below is
+        # wrong.  Checking here means no code path can produce a transition map
+        # from a bad chain, however the chain was obtained.
+        if not allow_infeasible and not chain.feasible:
+            bad = chain.infeasible_intervals()
+            worst = max(chain.marginal_errors()[t] for t in bad)
+            raise ValueError(
+                f"reference chain is infeasible at interval(s) {bad}: marginal "
+                f"errors {[f'{chain.marginal_errors()[t]:.2e}' for t in bad]} "
+                f"exceed feasibility_tol {chain.feasibility_tol:.1e}. "
+                f"T_t 1 = M_t^T rowsums(P) then differs from g_t = M_t^T a_t, so "
+                f"A_t is not row-stochastic; the deviation is "
+                f"marginal_error / g_tk, i.e. up to {worst:.1e}/g_tk, so it is "
+                f"worst for low-mass states. Rebuild with a larger kappa, "
+                f"support='dense', or a larger epsilon. Pass "
+                f"allow_infeasible=True only to study the failure itself."
+            )
         self.chain = chain
         self.cfg = cfg
         self.dtype = torch_dtype(cfg.dtype)

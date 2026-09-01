@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from cellstateadj.config import PipelineConfig
 from cellstateadj.diagnostics import degeneracy_check
 from cellstateadj.pipeline import run_pipeline
+from cellstateadj.reference import (InfeasibleCouplingError,
+                                    SinkhornConvergenceError)
 from cellstateadj import baselines, evaluate
 from cellstateadj import simulate as sim
 
@@ -72,7 +74,15 @@ def main(argv=None):
         cfg.representation.n_hvg = None
         cfg.representation.n_components = min(20, args.n_genes - 1)
 
-        res = run_pipeline(truth.data, cfg, verbose=args.verbose)
+        try:
+            res = run_pipeline(truth.data, cfg, verbose=args.verbose)
+        except (InfeasibleCouplingError, SinkhornConvergenceError) as exc:
+            # One scenario failing to build a usable chain is a RESULT about
+            # that scenario at this epsilon, not a reason to abandon the sweep.
+            print(f"{name:42s} SKIPPED: {type(exc).__name__}: {exc}")
+            rows.append(dict(scenario=name, n_true_states=sc.n_states,
+                             error=f"{type(exc).__name__}: {exc}"))
+            continue
         ours = evaluate.state_recovery(res.fit.M, truth.states)
 
         labels = baselines.expression_clustering(res.Z, args.K, seed=args.seed)
@@ -100,6 +110,12 @@ def main(argv=None):
               f"expr={row['ari_expression']:.3f}  "
               f"T-L1={row['transition_l1']:.3f}  Keff={row['k_eff']:.2f}  "
               f"V+={row['V_plus']:.4f}")
+
+    failed = [r for r in rows if "error" in r]
+    if failed:
+        print(f"\n[note] {len(failed)} scenario(s) could not build a usable "
+              f"reference chain at epsilon={args.epsilon}: "
+              f"{[r['scenario'] for r in failed]}. Try a larger epsilon.")
 
     with open(os.path.join(args.out, "study.json"), "w") as fh:
         json.dump(rows, fh, indent=2, default=float)

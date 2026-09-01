@@ -135,6 +135,24 @@ def geometric_null(
 # results container
 # ---------------------------------------------------------------------------
 
+def _quadrant(v: float, g: float, v_threshold: float, g_threshold: float) -> str:
+    """The (V, G) quadrant label of spec 1.17.
+
+    * ``geometric``      -- high V, low G: the heterogeneity is largely
+      predictable from smooth expression geometry.
+    * ``excess_nonsmooth`` -- high V, high G: not captured by the smooth null.
+      NECESSARY BUT NOT SUFFICIENT evidence for fate priming; also consistent
+      with coupling noise, representation error, or an inadequate null model.
+      Never report it as priming without the supplementary checks.
+    * ``homogeneous``    -- low V.
+    """
+    if not (np.isfinite(v) and np.isfinite(g)):
+        return "unevaluated"
+    if v < v_threshold:
+        return "homogeneous"
+    return "excess_nonsmooth" if g >= g_threshold else "geometric"
+
+
 @dataclass
 class Diagnostics:
     g: List[np.ndarray]                       # (T,) state masses
@@ -152,7 +170,8 @@ class Diagnostics:
     active: List[np.ndarray] = field(default_factory=list)
     notes: Dict[str, object] = field(default_factory=dict)
 
-    def event_table(self, v_threshold: float = 0.1, n_threshold: float = 1.2):
+    def event_table(self, v_threshold: float = 0.1, n_threshold: float = 1.2,
+                    g_threshold: Optional[float] = None):
         """Classify each state as coherent divergence / outgoing heterogeneity /
         coherent merging / incoming heterogeneity (spec 1.18).
 
@@ -160,7 +179,16 @@ class Diagnostics:
         that separation is one of the defensible contributions, so the labels
         are reported explicitly rather than collapsed into one "branching"
         score.
+
+        Geometry is reported as a QUADRANT of (V, G), never as ``V - G``.  There
+        is no ``V = V_geometry + V_residual`` decomposition: Eqs. 29 and 31
+        compare the fingerprints against different reference distributions
+        (the KL barycentre phi_k versus the smooth predictor fhat(z)), so their
+        difference is not a residual and carries no guaranteed sign.  In
+        practice it is routinely NEGATIVE, because a cross-fitted smooth
+        predictor is often a worse reference than the within-state mean.
         """
+        g_threshold = v_threshold if g_threshold is None else g_threshold
         rows = []
         T = len(self.g)
         for t in range(T):
@@ -187,7 +215,10 @@ class Diagnostics:
                 rows.append(dict(t=t, state=k, mass=float(self.g[t][k]),
                                  n_child=nch, n_parent=npa,
                                  V_plus=vp, V_minus=vm, G_plus=gp, G_minus=gm,
-                                 excess_plus=(vp - gp) if np.isfinite(gp) else np.nan,
+                                 geometry_plus=_quadrant(vp, gp, v_threshold,
+                                                         g_threshold),
+                                 geometry_minus=_quadrant(vm, gm, v_threshold,
+                                                          g_threshold),
                                  label="+".join(labels) if labels else "stable"))
         try:
             import pandas as pd

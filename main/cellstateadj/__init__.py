@@ -27,12 +27,15 @@ from .data import TimeSeriesData, subsample_cells, subsample_timepoints
 from .representation import learn_representation
 from .cost import adjacent_cost, build_support
 from .sinkhorn import sinkhorn_dense, sinkhorn_sparse
-from .reference import ReferenceChain, build_reference_chain
+from .reference import (ReferenceChain, build_reference_chain,
+                        InfeasibleCouplingError, SinkhornConvergenceError)
 from .informativeness import epsilon_scan, EpsilonScanResult
 from .model import CoarseGrainModel, ObjectiveTerms
 from .optimize import fit, FitResult
-from .pipeline import PipelineResult, run_epsilon_scan, run_pipeline, lambda_sweep, k_selection
-from . import diagnostics, simulate, baselines, evaluate, stability
+from .pipeline import (PipelineResult, run_epsilon_scan, run_pipeline,
+                       lambda_sweep, k_diagnostic_sweep)
+from .selection import KSelectionResult, select_K
+from . import diagnostics, simulate, baselines, evaluate, stability, selection
 
 __all__ = [
     "RepresentationConfig",
@@ -51,6 +54,8 @@ __all__ = [
     "sinkhorn_sparse",
     "ReferenceChain",
     "build_reference_chain",
+    "InfeasibleCouplingError",
+    "SinkhornConvergenceError",
     "epsilon_scan",
     "EpsilonScanResult",
     "CoarseGrainModel",
@@ -66,7 +71,10 @@ __all__ = [
     "run_epsilon_scan",
     "run_pipeline",
     "lambda_sweep",
-    "k_selection",
+    "k_diagnostic_sweep",
+    "select_K",
+    "KSelectionResult",
+    "selection",
 ]
 
 __version__ = "0.1.0"
