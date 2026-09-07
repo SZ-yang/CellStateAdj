@@ -130,7 +130,35 @@ class EpsilonScanResult:
     notes: Dict[str, object] = field(default_factory=dict)
 
     def mean_curve(self, name: str) -> np.ndarray:
-        return np.nanmean(self.metrics[name], axis=1)
+        """Across-interval mean, skipping unevaluated intervals.
+
+        DESCRIPTIVE ONLY -- for plotting and reporting.  ``nanmean`` drops
+        intervals that could not be evaluated, so a curve here can look healthy
+        while some intervals carry no measurement at all.  :meth:`recommend`
+        must therefore NOT decide admissibility from this alone; it applies the
+        interval-level NaN test in :meth:`unevaluated_intervals` as well.
+        """
+        m = np.asarray(self.metrics[name], dtype=float)
+        out = np.full(m.shape[0], np.nan)
+        for i in range(m.shape[0]):
+            row = m[i][~np.isnan(m[i])]
+            if row.size:
+                out[i] = row.mean()
+        return out
+
+    def unevaluated_intervals(self, name: str) -> Dict[int, List[int]]:
+        """``{epsilon_index: [interval ids that are NaN]}`` for one metric.
+
+        Interval ids are the entries of ``self.intervals``, not column indices,
+        so they line up with the interval numbering used everywhere else.
+        """
+        m = self.metrics[name]
+        out: Dict[int, List[int]] = {}
+        for ei in range(m.shape[0]):
+            bad = np.flatnonzero(np.isnan(m[ei]))
+            if bad.size:
+                out[int(ei)] = [int(self.intervals[c]) for c in bad]
+        return out
 
     def to_frame(self):
         """Long-format pandas frame (pandas optional)."""
@@ -161,28 +189,53 @@ class EpsilonScanResult:
         A criterion that could not be EVALUATED (NaN) counts as FAILED, not as
         passed.  The spec requires positive evidence of stability; treating a
         missing measurement as satisfying it is how an epsilon gets declared
-        admissible with no stability evidence behind it at all.  Which criteria
-        went unevaluated is reported in ``unevaluated``.
+        admissible with no stability evidence behind it at all.
+
+        [CRITICAL] The test is applied PER INTERVAL, not to the across-interval
+        mean.  ``mean_curve`` is a ``nanmean``, so an epsilon whose stability was
+        measured on interval 0 and unevaluated on interval 1 would otherwise be
+        scored on interval 0 alone and could pass with half the evidence
+        missing -- silently, because the averaged number looks perfectly
+        healthy.  An epsilon is admissible only if every required criterion was
+        evaluated on EVERY interval in the scan and the mean then clears its
+        threshold.  ``unevaluated`` reports, per criterion, which epsilons and
+        which interval ids were missing.
         """
         ok = np.ones(len(self.epsilons), dtype=bool)
-        unevaluated: Dict[str, int] = {}
+        unevaluated: Dict[str, dict] = {}
 
-        def _apply(curve: np.ndarray, threshold: float, name: str) -> None:
+        def _apply(name: str, threshold: float) -> None:
             nonlocal ok
-            nan = np.isnan(curve)
-            if nan.any():
-                unevaluated[name] = int(nan.sum())
-            ok = ok & np.where(nan, False, curve >= threshold)
+            m = self.metrics[name]
+            curve = self.mean_curve(name)
 
-        _apply(self.mean_curve("I_cell_normalized"), min_norm_info, "I_cell_normalized")
+            # (1) interval-level completeness: any unevaluated interval fails
+            #     this epsilon outright, however good the surviving mean is.
+            missing = self.unevaluated_intervals(name)
+            complete = np.ones(len(self.epsilons), dtype=bool)
+            if missing:
+                for ei, ivs in missing.items():
+                    complete[ei] = False
+                unevaluated[name] = {
+                    "n_intervals": int(m.shape[1]),
+                    "per_epsilon": {f"{float(self.epsilons[ei]):g}": ivs
+                                    for ei, ivs in missing.items()},
+                }
+
+            # (2) the threshold, on the mean over the intervals that do exist
+            with np.errstate(invalid="ignore"):
+                passes = np.where(np.isnan(curve), False, curve >= threshold)
+
+            ok = ok & passes & complete
+
+        _apply("I_cell_normalized", min_norm_info)
         if "I_fingerprint_plus" in self.metrics:
-            _apply(self.mean_curve("I_fingerprint_plus"), min_fingerprint_info,
-                   "I_fingerprint_plus")
+            _apply("I_fingerprint_plus", min_fingerprint_info)
         for key in ("stability_resample", "stability_cost"):
             if key in self.metrics:
-                _apply(self.mean_curve(key), min_stability, key)
+                _apply(key, min_stability)
         if "feasible" in self.metrics:
-            _apply(self.mean_curve("feasible"), 0.999, "feasible")
+            _apply("feasible", 0.999)
 
         idx = np.flatnonzero(ok)
         if idx.size == 0:
@@ -190,8 +243,10 @@ class EpsilonScanResult:
                     "unevaluated": unevaluated,
                     "reason": "no epsilon satisfies all criteria -- "
                               "the informative window may not exist at this spacing"
-                              + (f" (note: {unevaluated} could not be evaluated "
-                                 f"and were counted as failures)" if unevaluated else "")}
+                              + (f" (note: {sorted(unevaluated)} had unevaluated "
+                                 f"intervals and were counted as failures; see "
+                                 f"'unevaluated' for which epsilons and intervals)"
+                                 if unevaluated else "")}
 
         # The admissible set need not be contiguous.  Taking (first, last) as a
         # window and picking its geometric centre can land on an epsilon that

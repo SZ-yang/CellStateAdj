@@ -1,0 +1,13 @@
+host=s19.hpcc.dartmouth.edu job=9373601 cpus=16 started=2026-09-06T20:50:46-04:00
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_first_run_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+[K-sweep] K=10 epsilon=0.2 kappa=200 max_iter=800 n_init=2
+[K-sweep] config hash 529e4e2127 -> /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/k_sweep_529e4e2127
+[K=10] half 0: n=[500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] feasible=True kappas=[200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
+[K=10] half 1: n=[500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] feasible=True kappas=[200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
+[K=10] 0->1: train_compress=10.320788 heldout_compress=12.711797 status=converged
+[K=10] 1->0: train_compress=10.480716 heldout_compress=12.937861 status=converged
+[K-sweep] K=10 heldout_compress=12.824829 train=10.400752 min_g=8.00e-03 Keff=8.59 converged=True (5.9 min)
+[K-sweep] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/k_sweep_529e4e2127/K_010.json

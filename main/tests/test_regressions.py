@@ -197,17 +197,51 @@ def test_dense_support_is_never_called_infeasible():
         build_reference_chain(Z, np.arange(2.0), cfg, verbose=0)
 
 
-def test_epsilon_too_small_for_the_cost_range_is_diagnosed():
-    """exp(-C/eps) underflows once max(cost)/eps approaches ~708 in float64.
-    No iteration count fixes that, so the message must say so."""
+def test_epsilon_ill_conditioned_for_the_cost_range_is_diagnosed():
+    """A large max(cost)/eps is reported as ILL-CONDITIONING, not as infeasibility.
+
+    The earlier message claimed the marginals "cannot be met at any iteration
+    count" once max(cost)/eps passed ~708.  That is wrong on two counts: this
+    Sinkhorn is log-domain (sinkhorn.py), so exp(-C/eps) is never formed; and
+    feasibility depends on whether the SURVIVING support still admits the
+    marginals, not on the cost range -- see the diagonal counterexample below.
+    The ratio is genuinely useful context for a solve that already failed, so it
+    is still reported, but it must not be phrased as a verdict.
+    """
     rng = np.random.default_rng(0)
     Z = [rng.standard_normal((30, 3)) * 3 + 0.3 * t for t in range(2)]
     cfg = CouplingConfig(epsilon=0.001, support="dense", tol=1e-12, max_iter=200)
     with pytest.raises(SinkhornConvergenceError) as e:
         build_reference_chain(Z, np.arange(2.0), cfg, verbose=0)
     msg = str(e.value)
-    assert "underflow limit" in msg and "too small" in msg
+    assert "ill-conditioned" in msg
+    assert "conditioning scale" in msg
     assert e.value.cost_ratio > 200
+    # the corrected message must NOT assert impossibility
+    assert "cannot be met at any" not in msg
+    assert "underflow limit" not in msg
+
+
+def test_extreme_cost_ratio_stays_feasible_when_the_support_admits_the_marginals():
+    """max(C)/eps far past the conditioning scale does NOT imply infeasibility.
+
+    A 2x2 diagonal problem: the off-diagonal cost ratio is ~2000, an order of
+    magnitude past the 708 float64 scale, yet the balanced plan exists exactly
+    (it is the diagonal) and log-domain Sinkhorn finds it. This is the
+    counterexample to using max(cost)/epsilon as a lower bound on epsilon.
+    """
+    from cellstateadj.sinkhorn import sinkhorn_dense
+
+    C = np.array([[0.0, 100.0], [100.0, 0.0]])
+    a = b = np.array([0.5, 0.5])
+    eps = 0.05
+    assert C.max() / eps > 700 * 2          # deep past the conditioning scale
+
+    res = sinkhorn_dense(C, a, b, eps, max_iter=5000, tol=1e-12)
+    assert res.marginal_error < 1e-9, res.marginal_error
+    P = np.zeros((2, 2))
+    P[res.rows, res.cols] = res.values
+    assert np.allclose(P, np.diag([0.5, 0.5]), atol=1e-9), P
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +259,13 @@ def test_unevaluated_stability_makes_an_epsilon_inadmissible():
     }
     rec = EpsilonScanResult(epsilons=eps, intervals=[0], metrics=metrics).recommend()
     assert 0.01 not in rec["admissible"], "NaN stability must not pass"
-    assert rec["unevaluated"].get("stability_resample") == 1
+    # ``unevaluated`` reports WHICH epsilons and WHICH intervals were missing,
+    # not just how many criteria were affected: an interval-level NaN has to be
+    # visible per interval or it can be averaged away (see
+    # test_informativeness.py::test_recommend_rejects_epsilon_with_an_unevaluated_interval).
+    ue = rec["unevaluated"]["stability_resample"]
+    assert ue["n_intervals"] == 1
+    assert ue["per_epsilon"] == {"0.01": [0]}
 
 
 def test_paired_replicates_hold_out_the_same_unit_at_both_ends():

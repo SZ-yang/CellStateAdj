@@ -13,17 +13,58 @@ a separate pass.
 
 38,817 cells × 2,000 HVGs; 39 timepoints, days 0.0–18.0; 1,000 cells/day (817 at
 day 1.5). The frozen representation is `obsm['X_model']` (30 PCs).
-`obs['batch']` ∈ {1,2} is the culture replicate; `obs['arm']` ∈ {shared, serum}.
+`obs['batch']` ∈ {1,2} is the duplicate sample; `obs['arm']` ∈ {shared, serum}.
 
 Two properties shape the code:
 
 - **Irregular Δτ** — 0.5 d through day 8, then 0.25 d over days 8→9, then 0.5 d to
   day 18. The cost is `‖z_i−z_j‖²/Δτ_t`, so real day values are used and
   `cost_scale_mode="global"` is kept (a per-interval scale would cancel Δτ out).
-- **Serum-only is a branch decision.** `PROJECT_HANDOFF.txt:504` forbids feeding both
-  arms as one series. Keeping shared + serum makes it unbranched. The cost: balanced
-  OT forces *all* day-8 mass onto serum day-8.25 cells although roughly half the real
-  descendants entered 2i. This caveat is written into every `summary.json`.
+- **The serum arm is enforced, not assumed.** `load_serum()` keeps `arm == "shared"`
+  through day 8 and `arm == "serum"` after it, asserts that no `2i` cell survives, and
+  refuses a file with no `arm` column. A day-only filter is not enough: the CLI accepts
+  `--h5ad`, and the parent file (`wot_balanced_shared_pca.h5ad`) carries both arms over
+  the same day range. The surviving day × batch × arm counts are printed and saved as
+  `cell_composition.csv`.
+
+## What this run does and does not estimate
+
+Four statements are written into every `summary.json`. They are different claims.
+
+**Conditioning on the intervention.** This analysis conditions on the serum
+intervention: shared cells through day 8 are followed only by serum-cultured cells
+after day 8. It estimates a *serum-conditional trajectory* and does not estimate
+allocation or transitions between the serum and 2i interventions. Serum and 2i are
+experimental interventions applied at day 8, not stochastic fates with an observed mass
+split — so there is no "true" day-8 allocation that balanced transport could be getting
+wrong. Edges across day 8 → 8.25 describe the serum-conditional continuation, not a
+developmental bifurcation.
+
+**This is a balanced pilot, not a WOT reproduction.** Marginals are uniform over
+sampled cells at each timepoint; proliferation and death are **not** modelled, and
+`obs['cell_growth_rate']` is present but deliberately unused. Schiebinger et al. (2019)
+used growth-aware *unbalanced* transport, so these couplings are not comparable to
+theirs and transported mass must not be read as a population abundance. This — not the
+serum/2i split — is the genuine limitation of the balanced formulation. Unbalanced
+transport is a documented later extension, gated on validating abundance assumptions.
+
+**The representation is transductive across arms.** `analysis/wot_data_check.ipynb`
+selects HVGs and fits scaling and PCA on the balanced union of shared + serum + 2i
+cells, then extracts the serum subset. `obsm['X_model']` is therefore **not** a
+serum-only basis: it saw cells this run excludes. That is retained deliberately for
+cross-arm comparability, but it must be stated, and a serum-only PCA sensitivity run is
+the check (see *Sensitivity runs*). Note also that the package does **not** learn a
+representation during these fits — `X_model` is passed in precomputed via
+`run_pipeline(Z=...)` — so `config.json` marks its `representation` block `_inert` and
+records the actual representation fingerprint next to it.
+
+**`batch` 1/2 is a technical hold-out, not a biological replicate.** The WOT paper
+reports duplicate *samples* collected at each timepoint; sampling is destructive, so
+batch 1 is not established to be one longitudinal culture lineage followed across days.
+The split is still the right batch-wise technical hold-out for K selection, but the
+spread across its two directions is fold-direction variability of a technical split,
+**not** a sampling or biological standard error. Effective biological replication is
+n = 1 (a single female embryo).
 
 ## Why these scripts exist rather than `main/scripts/run_fit.py`
 
@@ -64,36 +105,38 @@ Stage A uses `support="dense"` instead: `epsilon_scan` sizes its support once at
 never reports infeasible — so support sizing cannot confound the feasibility column
 the scan exists to measure.
 
-### The epsilon range is bounded from below by float64, not by taste
+### Epsilon conditioning (a warning, NOT a lower bound)
 
 Measured on the full serum series: the global cost scale is **581.4**, and the
 normalised max cost per interval ranges 1.02 (day ~3) to 32.5 (day ~17) — the PCA
 geometry expands ~25x across the time course while the cost scale is a single global
 number, deliberately, so that Δτ survives.
 
-`exp(-C/eps)` underflows once `max(C)/eps` passes ~708 in float64
-(`reference.py:_underflow_limit`), and no number of Sinkhorn iterations fixes that:
+`max(C)/eps` past ~708 in float64 means the highest-cost entries of `exp(-C/eps)` fall
+below the smallest representable normal and carry no weight. **That does not make the
+balanced problem infeasible, and it does not put a floor under epsilon:**
 
-| eps | max(C)/eps | intervals over the limit |
-|---|---|---|
-| 0.002 | 16262 | 35 / 38 |
-| 0.005 | 6505 | 26 / 38 |
-| 0.01 | 3252 | 18 / 38 |
-| 0.02 | 1626 | 13 / 38 |
-| **0.05** | 650 | **0 / 38** |
-| 0.1 | 325 | 0 / 38 |
-| ≥ 0.2 | ≤ 163 | 0 / 38 |
+- the Sinkhorn here is **log-domain** (`sinkhorn.py` says so in its first line), so the
+  plan is never formed by evaluating `exp(-C/eps)` directly;
+- feasibility is a property of the *surviving* support, not of the cost range. A
+  near-diagonal problem stays exactly feasible however extreme the ratio gets — a 2x2
+  diagonal cost is solvable at any ratio — because the entries that survive still admit
+  the row and column sums.
 
-So any informative window on this series sits at **eps ≥ 0.05**. The scan still runs
-the smaller values and records `feasible=0` — that is the honest result, and
-`recommend()` counts an unevaluated criterion as failed — but each such cell costs a
-full 20,000-iteration solve, which is why Stage A is budgeted 2 days.
-`01_eps_scan.py` prints this table before scanning; it is also saved in
-`eps_scan/summary.json` under `underflow_report`.
+So `01_eps_scan.py` prints a **conditioning report**, which flags where to expect
+ill-conditioning and slow convergence, and additionally tracks the *nearest-neighbour*
+cost/eps ratio — the case where marginal-essential support really could be lost.
+Whether an epsilon is usable is decided by the measured `marginal_error`, by whether the
+solver had stopped improving (`SinkhornResult.stalled` separates "support admits no
+balanced plan" from "ran out of iterations"), and by the `feasible` column the scan
+records directly. The report is saved under `eps_scan/summary.json` as
+`conditioning_report`.
 
 Sinkhorn iteration counts vary enormously with where an interval sits relative to the
 scale: at eps=0.05 some intervals converge in ~170 iterations and others need the full
-20,000. Do not extrapolate the runtime from one interval.
+20,000. Do not extrapolate the runtime from one interval, and do not lower
+`--sinkhorn-max-iter` casually — it makes the `feasible` column incomparable across
+epsilons.
 
 CPU is sufficient throughout (`standard` partition). For a GPU run pass
 `--device auto`; `csa_wot.resolve_device` sets **both** `cfg.coupling.device` and
@@ -139,21 +182,51 @@ Results go to `/dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/`.
 ```bash
 cd CellStateAdj/analysis/wot_serum
 
-# Stage A -- epsilon informativeness (build-order step 1). ~20 min.
+# Stage A -- epsilon informativeness (build-order step 1).
 sbatch 01_eps_scan.sbatch
 #   -> eps_scan/scan_stride{1,2}.{npz,csv}, summary.json  ==> epsilon*
 
 # Stage B -- held-out K selection, protocol (b). Array over K.
 sbatch 02_k_sweep.sbatch --epsilon <eps*>
-python 02_k_reduce.py    --epsilon <eps*>
-#   -> k_sweep/K_*.json, k_sweep.csv, k_selection.json    ==> K*
+python 02_k_reduce.py                      # auto-finds the k_sweep_<hash> dir
+#   -> k_sweep_<hash>/K_*.json, k_sweep.csv, k_selection.json   ==> K*
 
-# Stage C -- the fit. Both lambda_pm = 0 and lambda_pm = 5 against one frozen chain.
-sbatch 03_fit.sbatch --epsilon <eps*> --K <K*>
-#   -> fit_lam0/, fit_main/, reference_chain_eps<e>.npz, manifest.json
+# Stage D -- lambda_pm sweep at fixed epsilon and K (build-order step 4).
+#   RUN THIS BEFORE CALLING ANY DAG A RESULT.
+sbatch 04_lambda_sweep.sbatch --epsilon <eps*> --K <K*>
+#   -> lambda_sweep_<hash>_K<K>/lambda_sweep.{json,csv}  ==> usable lambda range
+
+# Stage C -- fits at the lambdas the sweep supports.
+sbatch 03_fit.sbatch --epsilon <eps*> --K <K*> --lambda-pm 0 <lam...>
+#   -> run_<hash>_K<K>/{reference_chain.npz, fit_lam0/, fit_lam<v>/, manifest.json}
 
 # then open 90_inspect.ipynb
 ```
+
+### Output layout and rerun safety
+
+Every stage writes into a directory keyed by a **configuration hash** covering the
+h5ad, a content hash of the representation, the arm policy, day range, stride, cell
+subsampling and its seed, epsilon, support/kappa, the shared lambdas, and the optimiser
+settings (`csa_wot.FINGERPRINT_FIELDS`). A different configuration therefore lands in a
+different directory and cannot overwrite an earlier one.
+
+Within a stage, **every destination is resolved and checked before anything is
+written** (`csa_wot.reserve_destinations`). This ordering is the point: writing the
+reference chain and only then discovering that `fit_lam0/` exists would leave the
+previous run's fits pointing at a chain that had been silently replaced. A failed
+collision check cannot modify an existing run — it creates nothing.
+
+### Sensitivity runs
+
+- **serum-only PCA** — the shipped `X_model` is transductive across arms (see above).
+  `00_serum_only_pca.py` builds the comparison dataset: identical preprocessing, but
+  HVGs, scaling and PCA fitted on the serum-conditional cells **only** (the restriction
+  happens *before* the basis is fitted, which is the whole difference from
+  `wot_data_check.ipynb`). Then re-run any stage with `--h5ad <that file>`. The
+  representation content hash differs, so results land in a separate run directory and
+  the reducer refuses to mix them with the main sweep — which is what should happen.
+- **Δτ** — Stage A already runs stride 1 and 2; `--stride` on the other stages extends it.
 
 Smoke run first (a few minutes, 9 timepoints):
 
@@ -179,12 +252,20 @@ Per fit directory:
 | `diagnostics.npz` | `V±`, `G±`, `n_child`, `n_parent`, `active` |
 | `dag_edges.json` / `dag_nodes.csv` / `dag.graphml` | the DAG |
 | `history.csv` | per-iteration objective, components, `K_eff`, `g` range, floor fraction, `‖dM‖` |
-| `cell_table.csv.gz` | one row per cell: name, day, replicate, state, membership, published annotation |
-| `summary.json` / `config.json` | status, terms, degeneracy check, mass conservation, the branch caveat |
+| `cell_table.csv.gz` | one row per cell: name, day, batch, state, membership, published annotation |
+| `cell_composition.csv` | day x batch x arm counts of the cells actually fitted |
+| `summary.json` / `config.json` | status, terms, degeneracy check, mass conservation, the full provenance block (fingerprint + the four statements above); `config.json` marks its `representation` block `_inert` |
 
-The reference chain (`P^ref` sparse triplets, marginals, `Z`) is written once at the
-top level as `reference_chain_eps<e>.npz` and shared by both fits — ε is frozen, so
-the chain is identical.
+The reference chain (`P^ref` sparse triplets, marginals, `Z`) is written once per run
+directory as `reference_chain.npz` and shared by every fit in it — ε is frozen, so the
+chain is identical across lambdas.
+
+Stage D writes `lambda_sweep.json` / `.csv` with, per lambda: every objective component
+(total, compress, expression, plus, minus, and their per-timepoint breakdowns),
+convergence status, minimum state mass, `K_eff` per timepoint, initialisation stability
+(pairwise restart ARI), and the membership difference from λ=0 (ARI and mean L1). Its
+`verdict` block reports the usable range — where memberships move without effective
+occupancy collapsing — or says plainly that no such range exists.
 
 ## Reading the DAG
 

@@ -204,13 +204,23 @@ def split_half_by_replicate(data: TimeSeriesData, seed: int = 0,
     Returns ``(half_a, half_b)``.
 
     [CRITICAL] With ``paired=True`` (the default) the replicate subset is chosen
-    ONCE and reused at every timepoint, so half A is the same culture lineage
-    all the way through.  WOT ran parallel time courses, so a replicate label
-    tracks one culture across time; drawing the subset independently per
-    timepoint would put replicate 0 in half A early and replicate 1 in half A
-    later, which is not a held-out sample at all -- it leaks the same
-    experimental unit into both halves and silently inflates the held-out K
-    curve and the replicate support.
+    ONCE and reused at every timepoint, so half A carries the same replicate
+    LABEL all the way through.  Drawing the subset independently per timepoint
+    would put replicate 0 in half A early and replicate 1 in half A later, which
+    is not a held-out sample at all -- it leaks the same label into both halves
+    and silently inflates the held-out K curve and the replicate support.
+
+    [SCOPE] This is a BATCH-WISE TECHNICAL hold-out, not a longitudinal one.  An
+    earlier version of this docstring said a replicate label "tracks one culture
+    across time"; that is not established.  The WOT paper reports duplicate
+    SAMPLES collected at each timepoint, and scRNA-seq sampling is destructive,
+    so label 1 is not shown to be one culture followed across days.  Holding the
+    label out consistently is still the right technical split -- it removes a
+    whole batch rather than a random half of every batch -- but the spread across
+    the two split directions is fold-direction variability of that technical
+    split, NOT a sampling or biological standard error.  Effective biological
+    replication for this dataset is n = 1, a single embryo (PROJECT_HANDOFF.txt
+    s5).
 
     [CRITICAL] Choosing the subset once is only sufficient if every timepoint
     carries the SAME label set.  If the labels differ across time -- say

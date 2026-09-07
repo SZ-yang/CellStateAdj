@@ -64,3 +64,76 @@ def test_epsilon_scan_runs_and_recommends_a_window():
     # informativeness must be monotone decreasing in epsilon
     curve = scan.mean_curve("I_cell")
     assert all(x >= y - 1e-8 for x, y in zip(curve, curve[1:])), curve
+
+
+# ---------------------------------------------------------------------------
+# regression: interval-level NaN must not be averaged away (issue 1)
+# ---------------------------------------------------------------------------
+
+def _scan_with(stability_resample, n_intervals=2, eps=(0.1,)):
+    """Minimal EpsilonScanResult carrying only what recommend() reads."""
+    import numpy as np
+    from cellstateadj.informativeness import EpsilonScanResult
+
+    eps = np.asarray(eps, dtype=float)
+    shape = (len(eps), n_intervals)
+    ones = np.ones(shape)
+    metrics = {
+        "I_cell_normalized": ones * 0.5,      # comfortably over min_norm_info
+        "I_fingerprint_plus": ones * 0.5,     # comfortably over min_fingerprint_info
+        "stability_cost": ones,               # perfect
+        "feasible": ones,                     # every plan feasible
+        "stability_resample": np.asarray(stability_resample, dtype=float).reshape(shape),
+    }
+    return EpsilonScanResult(epsilons=eps, intervals=list(range(n_intervals)),
+                             metrics=metrics)
+
+
+def test_recommend_rejects_epsilon_with_an_unevaluated_interval():
+    """One interval measured, one NaN => NOT admissible.
+
+    ``mean_curve`` is a nanmean, so [0.95, nan] averages to 0.95 and clears the
+    0.8 stability threshold on the strength of half the evidence.  The stated
+    policy is that an unevaluated required criterion counts as a failure, so
+    this epsilon must be rejected and the gap reported.
+    """
+    import numpy as np
+
+    scan = _scan_with([[0.95, np.nan]])
+    assert np.isclose(scan.mean_curve("stability_resample")[0], 0.95)   # the trap
+
+    rec = scan.recommend()
+    assert rec["epsilon_star"] is None, rec
+    assert "stability_resample" in rec["unevaluated"]
+    # the report names the epsilon and the specific interval that was missing
+    assert rec["unevaluated"]["stability_resample"]["per_epsilon"]["0.1"] == [1]
+
+
+def test_recommend_accepts_when_every_interval_is_evaluated():
+    """Same numbers, nothing missing => admissible.  Guards over-rejection."""
+    scan = _scan_with([[0.95, 0.9]])
+    rec = scan.recommend()
+    assert rec["epsilon_star"] == 0.1, rec
+    assert rec["unevaluated"] == {}
+
+
+def test_recommend_rejects_only_the_epsilon_with_the_gap():
+    """A NaN at one epsilon must not disqualify a fully-evaluated one."""
+    import numpy as np
+
+    scan = _scan_with([[0.95, np.nan], [0.95, 0.9]], eps=(0.1, 0.2))
+    rec = scan.recommend()
+    assert rec["epsilon_star"] == 0.2, rec
+    assert rec["admissible"] == [0.2]
+    assert rec["unevaluated"]["stability_resample"]["per_epsilon"] == {"0.1": [1]}
+
+
+def test_unevaluated_intervals_reports_interval_ids_not_columns():
+    """Interval ids come from self.intervals, so a subset scan reports real ids."""
+    import numpy as np
+    from cellstateadj.informativeness import EpsilonScanResult
+
+    metrics = {"stability_resample": np.array([[0.9, np.nan, 0.9]])}
+    scan = EpsilonScanResult(epsilons=np.array([0.1]), intervals=[5, 11, 17],
+                             metrics=metrics)
+    assert scan.unevaluated_intervals("stability_resample") == {0: [11]}

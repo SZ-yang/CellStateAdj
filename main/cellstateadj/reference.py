@@ -175,8 +175,23 @@ class ReferenceChain:
 def _underflow_limit(dtype: str) -> float:
     """|log(smallest positive normal)| for the working dtype.
 
-    exp(-C/eps) below this underflows, so an interval whose max(cost)/epsilon
-    approaches it cannot have its marginals met however long Sinkhorn runs.
+    A CONDITIONING SCALE, not a feasibility bound.  ``max(cost)/epsilon`` above
+    this means the largest-cost entries of ``exp(-C/eps)`` fall below the
+    smallest representable normal, so those entries carry no weight.
+
+    That on its own does NOT make the balanced problem infeasible, for two
+    reasons.  First, the Sinkhorn here runs entirely in the log domain (see
+    ``sinkhorn.py``), so the plan is never formed by evaluating ``exp(-C/eps)``
+    directly.  Second, and more fundamentally, a plan only needs enough
+    surviving support to meet the marginals: a near-diagonal problem stays
+    exactly feasible however extreme the off-diagonal ratio gets -- a 2x2
+    diagonal cost is solvable at any ratio.  What matters is whether the entries
+    that DO survive still admit the row and column sums.
+
+    So use this to explain a solve that already failed, never to predict one.
+    Acceptability is decided by the achieved ``marginal_error``, by whether the
+    error was still improving (``SinkhornResult.stalled``), and by whether
+    marginal-essential support was lost -- all of which are measured.
     """
     return 708.4 if dtype == "float64" else 88.7
 
@@ -203,15 +218,17 @@ class SinkhornConvergenceError(RuntimeError):
         if (cost_ratio is not None and underflow_limit is not None
                 and cost_ratio > 0.3 * underflow_limit):
             msg += (
-                f" max(cost)/epsilon = {cost_ratio:.0f}, against a "
-                f"{underflow_limit:.0f} underflow limit for this dtype: epsilon "
-                f"is too small for this interval's cost RANGE, so exp(-C/eps) "
-                f"loses precision and the marginals cannot be met at any "
-                f"iteration count. Use a larger epsilon (or dtype='float64' if "
-                f"not already). Note a shared cost scale makes intervals with "
-                f"genuinely wider transport more expensive -- that is correct "
-                f"behaviour and this interval is telling you it needs more "
-                f"entropy."
+                f" For context, max(cost)/epsilon = {cost_ratio:.0f} against a "
+                f"{underflow_limit:.0f} conditioning scale for this dtype, so the "
+                f"highest-cost entries carry no weight and the problem is "
+                f"ill-conditioned at this epsilon. That is a likely explanation "
+                f"for the slow convergence, NOT a proof of infeasibility: the "
+                f"solver is log-domain and a plan needs only enough surviving "
+                f"support to meet the marginals. Try a larger epsilon or a higher "
+                f"max_iter and judge by the achieved marginal error. Note a shared "
+                f"cost scale makes intervals with genuinely wider transport more "
+                f"expensive -- that is correct behaviour and this interval may "
+                f"simply need more entropy."
             )
         else:
             msg += f" Raise CouplingConfig.max_iter, or use a larger epsilon."
