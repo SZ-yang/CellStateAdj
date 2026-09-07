@@ -1,0 +1,119 @@
+host=t06.hpcc.dartmouth.edu job=9377376 cpus=32 started=2026-09-07T14:27:16-04:00
+[device] auto -> cpu
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_first_run_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+
+[sweep] /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/lambda_sweep_3d54e22087_K20_grid
+[sweep] K=20 epsilon=0.2 lambdas=[0.0, 1.0, 5.0]
+  cost_scale_mode=global scale=1574
+  [interval 0] dtau=0.25 nnz=536930 kappa=400 iters=40 marg_err=2.64e-08
+  [interval 1] dtau=0.25 nnz=514599 kappa=400 iters=50 marg_err=1.50e-08
+  [interval 2] dtau=0.25 nnz=519653 kappa=400 iters=50 marg_err=9.27e-09
+  [interval 3] dtau=0.5 nnz=520311 kappa=400 iters=70 marg_err=1.48e-08
+  [interval 4] dtau=0.5 nnz=507772 kappa=400 iters=60 marg_err=6.42e-09
+  [interval 5] dtau=0.5 nnz=533934 kappa=400 iters=50 marg_err=3.06e-08
+  [interval 6] dtau=0.5 nnz=533816 kappa=400 iters=50 marg_err=6.23e-08
+  [interval 7] dtau=0.5 nnz=534698 kappa=400 iters=70 marg_err=1.22e-08
+  [interval 8] dtau=0.5 nnz=533041 kappa=400 iters=80 marg_err=4.50e-08
+  [interval 9] dtau=0.5 nnz=524235 kappa=400 iters=150 marg_err=4.78e-08
+  [interval 10] dtau=0.5 nnz=529599 kappa=400 iters=140 marg_err=9.28e-08
+  [interval 11] dtau=0.5 nnz=543997 kappa=400 iters=2640 marg_err=9.94e-08
+  [interval 12] dtau=0.5 nnz=542030 kappa=400 iters=1470 marg_err=9.90e-08
+  [interval 13] dtau=0.5 nnz=535745 kappa=400 iters=170 marg_err=5.04e-08
+  [interval 14] dtau=0.5 nnz=537594 kappa=400 iters=230 marg_err=6.99e-08
+  [interval 15] dtau=0.5 nnz=527962 kappa=400 iters=150 marg_err=7.25e-08
+  [interval 16] dtau=0.5 nnz=522398 kappa=400 iters=150 marg_err=6.31e-08
+  [interval 17] dtau=0.5 nnz=527170 kappa=400 iters=160 marg_err=7.83e-08
+  [interval 18] dtau=0.5 nnz=528324 kappa=400 iters=130 marg_err=5.20e-08
+  [interval 19] dtau=0.5 nnz=522288 kappa=400 iters=6450 marg_err=9.99e-08
+  [interval 20] dtau=0.5 nnz=535248 kappa=400 iters=210 marg_err=6.33e-08
+[sweep] grid: 4 lambda_x x 3 lambda_pm = 12 fits
+
+[sweep] lambda_x=1 lambda_pm=0 ...
+[sweep] lx=1 lpm=0: status=converged L=77.4122 | shares comp 0.10 x 0.90 pm 0.00 | Keff=16.78 min_g=2.0e-03 ARI_vs_0=1.000 (21.8 min)
+
+[sweep] lambda_x=1 lambda_pm=1 ...
+[sweep] lx=1 lpm=1: status=converged L=82.7644 | shares comp 0.10 x 0.84 pm 0.06 | Keff=16.78 min_g=2.0e-03 ARI_vs_0=1.000 (4.7 min)
+
+[sweep] lambda_x=1 lambda_pm=5 ...
+[sweep] lambda_x=1 lambda_pm=5 FAILED: FloatingPointError: non-finite gradient
+
+[sweep] lambda_x=0.3 lambda_pm=0 ...
+[sweep] lx=0.3 lpm=0: status=converged L=28.8234 | shares comp 0.28 x 0.72 pm 0.00 | Keff=16.78 min_g=2.0e-03 ARI_vs_0=1.000 (3.9 min)
+
+[sweep] lambda_x=0.3 lambda_pm=1 ...
+[sweep] lx=0.3 lpm=1: status=converged L=34.2327 | shares comp 0.23 x 0.61 pm 0.16 | Keff=16.78 min_g=2.0e-03 ARI_vs_0=0.999 (11.3 min)
+
+[sweep] lambda_x=0.3 lambda_pm=5 ...
+[sweep] lambda_x=0.3 lambda_pm=5 FAILED: FloatingPointError: non-finite gradient
+
+[sweep] lambda_x=0.1 lambda_pm=0 ...
+[sweep] lx=0.1 lpm=0: status=converged L=14.9371 | shares comp 0.54 x 0.46 pm 0.00 | Keff=16.78 min_g=2.0e-03 ARI_vs_0=1.000 (7.9 min)
+
+[sweep] lambda_x=0.1 lambda_pm=1 ...
+[sweep] lx=0.1 lpm=1: status=converged L=46.9244 | shares comp 0.47 x 0.42 pm 0.10 | Keff=17.43 min_g=3.3e-04 ARI_vs_0=0.052 (44.3 min)
+
+[sweep] lambda_x=0.1 lambda_pm=5 ...
+[sweep] lambda_x=0.1 lambda_pm=5 FAILED: FloatingPointError: non-finite gradient
+
+[sweep] lambda_x=0.03 lambda_pm=0 ...
+[sweep] lx=0.03 lpm=0: status=converged L=10.0575 | shares comp 0.79 x 0.21 pm 0.00 | Keff=16.78 min_g=2.0e-03 ARI_vs_0=1.000 (12.5 min)
+
+[sweep] lambda_x=0.03 lambda_pm=1 ...
+[sweep] lx=0.03 lpm=1: status=converged L=36.2400 | shares comp 0.76 x 0.24 pm 0.00 | Keff=18.07 min_g=5.8e-09 ARI_vs_0=-0.009 (41.7 min)
+
+[sweep] lambda_x=0.03 lambda_pm=5 ...
+[sweep] lambda_x=0.03 lambda_pm=5 FAILED: FloatingPointError: non-finite gradient
+
+[sweep] verdict: {
+  "collapse_frac": 0.8,
+  "gate_1": "transport share >= expression share (else the fit is k-means)",
+  "gate_2": "lambda_pm moved memberships (ARI vs lambda_pm=0 at the same lambda_x < 0.99) without K_eff falling below collapse_frac of its lambda_pm=0 value, and the fit converged",
+  "n_error_cells": 4,
+  "error_cells": [
+    {
+      "lambda_x": 1.0,
+      "lambda_pm": 5.0,
+      "error": "FloatingPointError: non-finite gradient"
+    },
+    {
+      "lambda_x": 0.3,
+      "lambda_pm": 5.0,
+      "error": "FloatingPointError: non-finite gradient"
+    },
+    {
+      "lambda_x": 0.1,
+      "lambda_pm": 5.0,
+      "error": "FloatingPointError: non-finite gradient"
+    },
+    {
+      "lambda_x": 0.03,
+      "lambda_pm": 5.0,
+      "error": "FloatingPointError: non-finite gradient"
+    }
+  ],
+  "lambda_x_where_transport_competes": [
+    0.03,
+    0.1
+  ],
+  "usable_cells": [
+    {
+      "lambda_x": 0.03,
+      "lambda_pm": 1.0,
+      "ari_vs_lambda0": -0.009484285231427978,
+      "k_eff_mean": 18.070320086045697,
+      "k_eff_floor": 13.425838678533381
+    },
+    {
+      "lambda_x": 0.1,
+      "lambda_pm": 1.0,
+      "ari_vs_lambda0": 0.052436816485126,
+      "k_eff_mean": 17.42682946812023,
+      "k_eff_floor": 13.423644984852183
+    }
+  ],
+  "conclusion": "2 usable cell(s): [{'lambda_x': 0.03, 'lambda_pm': 1.0, 'ari_vs_lambda0': -0.009484285231427978, 'k_eff_mean': 18.070320086045697, 'k_eff_floor': 13.425838678533381}, {'lambda_x': 0.1, 'lambda_pm': 1.0, 'ari_vs_lambda0': 0.052436816485126, 'k_eff_mean': 17.42682946812023, 'k_eff_floor': 13.423644984852183}]. Report across them, not at one point."
+}
+[sweep] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/lambda_sweep_3d54e22087_K20_grid

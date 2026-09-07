@@ -1,0 +1,12 @@
+/dartfs/rc/lab/C/CxQiu/projects/joshua/CellStateAdj_work/CellStateAdj/main/cellstateadj/reference.py:115: UserWarning: Sparse CSR tensor support is in beta state. If you miss a functionality in the sparse tensor support, please submit a feature request to https://github.com/pytorch/pytorch/issues. (Triggered internally at /opt/conda/conda-bld/pytorch_1729647352509/work/aten/src/ATen/SparseCsrTensorImpl.cpp:53.)
+  P_csr.append(coo.to_sparse_csr())
+Traceback (most recent call last):
+  File "/dartfs/rc/lab/C/CxQiu/projects/joshua/CellStateAdj_work/CellStateAdj/analysis/wot_serum/04_lambda_sweep.py", line 252, in <module>
+    main()
+  File "/dartfs/rc/lab/C/CxQiu/projects/joshua/CellStateAdj_work/CellStateAdj/analysis/wot_serum/04_lambda_sweep.py", line 137, in main
+    res = fit_states(chain, Z, cfg.model, cfg.optim)
+  File "/dartfs/rc/lab/C/CxQiu/projects/joshua/CellStateAdj_work/CellStateAdj/main/cellstateadj/optimize.py", line 486, in fit
+    res = _run_full_gradient(model, cfg_r, chunk)
+  File "/dartfs/rc/lab/C/CxQiu/projects/joshua/CellStateAdj_work/CellStateAdj/main/cellstateadj/optimize.py", line 260, in _run_full_gradient
+    raise FloatingPointError("non-finite gradient")
+FloatingPointError: non-finite gradient

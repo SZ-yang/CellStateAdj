@@ -1,0 +1,48 @@
+host=s06.hpcc.dartmouth.edu job=9375094 cpus=32 started=2026-09-07T01:21:50-04:00
+[device] auto -> cpu
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_first_run_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+
+[sweep] /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/lambda_sweep_59cf3899e2_K20
+[sweep] K=20 epsilon=0.2 lambdas=[0.0, 0.1, 0.5, 1.0, 2.0, 5.0]
+  cost_scale_mode=global scale=1574
+  [interval 0] dtau=0.25 nnz=536930 kappa=400 iters=40 marg_err=2.64e-08
+  [interval 1] dtau=0.25 nnz=514599 kappa=400 iters=50 marg_err=1.50e-08
+  [interval 2] dtau=0.25 nnz=519653 kappa=400 iters=50 marg_err=9.27e-09
+  [interval 3] dtau=0.5 nnz=520311 kappa=400 iters=70 marg_err=1.48e-08
+  [interval 4] dtau=0.5 nnz=507772 kappa=400 iters=60 marg_err=6.42e-09
+  [interval 5] dtau=0.5 nnz=533934 kappa=400 iters=50 marg_err=3.06e-08
+  [interval 6] dtau=0.5 nnz=533816 kappa=400 iters=50 marg_err=6.23e-08
+  [interval 7] dtau=0.5 nnz=534698 kappa=400 iters=70 marg_err=1.22e-08
+  [interval 8] dtau=0.5 nnz=533041 kappa=400 iters=80 marg_err=4.50e-08
+  [interval 9] dtau=0.5 nnz=524235 kappa=400 iters=150 marg_err=4.78e-08
+  [interval 10] dtau=0.5 nnz=529599 kappa=400 iters=140 marg_err=9.28e-08
+  [interval 11] dtau=0.5 nnz=543997 kappa=400 iters=2640 marg_err=9.94e-08
+  [interval 12] dtau=0.5 nnz=542030 kappa=400 iters=1470 marg_err=9.90e-08
+  [interval 13] dtau=0.5 nnz=535745 kappa=400 iters=170 marg_err=5.04e-08
+  [interval 14] dtau=0.5 nnz=537594 kappa=400 iters=230 marg_err=6.99e-08
+  [interval 15] dtau=0.5 nnz=527962 kappa=400 iters=150 marg_err=7.25e-08
+  [interval 16] dtau=0.5 nnz=522398 kappa=400 iters=150 marg_err=6.31e-08
+  [interval 17] dtau=0.5 nnz=527170 kappa=400 iters=160 marg_err=7.83e-08
+  [interval 18] dtau=0.5 nnz=528324 kappa=400 iters=130 marg_err=5.20e-08
+  [interval 19] dtau=0.5 nnz=522288 kappa=400 iters=6450 marg_err=9.99e-08
+  [interval 20] dtau=0.5 nnz=535248 kappa=400 iters=210 marg_err=6.33e-08
+
+[sweep] lambda_pm=0 ...
+[sweep] lambda=0: status=converged L=77.412170 (comp 7.9958 / x 69.4164 / + 2.7659 / - 2.5783)  Keff_mean=16.78 min_g=2.00e-03 ARI_vs_0=1.000 (31.6 min)
+
+[sweep] lambda_pm=0.1 ...
+[sweep] lambda=0.1: status=converged L=77.953598 (comp 7.9984 / x 69.4207 / + 2.7655 / - 2.5798)  Keff_mean=16.78 min_g=2.00e-03 ARI_vs_0=1.000 (42.0 min)
+
+[sweep] lambda_pm=0.5 ...
+[sweep] lambda=0.5: status=converged L=80.091721 (comp 7.9984 / x 69.4207 / + 2.7655 / - 2.5798)  Keff_mean=16.78 min_g=2.00e-03 ARI_vs_0=1.000 (3.4 min)
+
+[sweep] lambda_pm=1 ...
+[sweep] lambda=1: status=converged L=82.764374 (comp 7.9984 / x 69.4207 / + 2.7655 / - 2.5798)  Keff_mean=16.78 min_g=2.00e-03 ARI_vs_0=1.000 (5.4 min)
+
+[sweep] lambda_pm=2 ...
+[sweep] lambda=2: status=converged L=88.181419 (comp 8.0095 / x 69.4633 / + 2.7704 / - 2.5839)  Keff_mean=16.79 min_g=2.00e-03 ARI_vs_0=0.998 (7.0 min)
+
+[sweep] lambda_pm=5 ...
