@@ -265,3 +265,129 @@ def test_representation_fingerprint_tracks_content_not_just_name():
     assert csa_wot.representation_fingerprint(Z2)["sha1"] == same
     Z2[0][0, 0] += 1.0
     assert csa_wot.representation_fingerprint(Z2)["sha1"] != same
+
+
+# ---------------------------------------------------------------------------
+# fixed-anchor CMI machinery (ADDITIONAL_EXPERIMENTS Stage 2)
+# ---------------------------------------------------------------------------
+
+import csa_anchors as ca
+
+
+def _toy_fingerprints(n=300, n_anchor=20, K=6, seed=0):
+    rng = np.random.default_rng(seed)
+    F = rng.dirichlet(np.ones(n_anchor) * 0.4, size=n)
+    a = np.full(n, 1.0 / n)
+    U = rng.standard_normal((n, K)) * 2.0
+    M = np.exp(U); M /= M.sum(1, keepdims=True)
+    return F, a, M
+
+
+def test_cmi_chain_rule_is_exact():
+    """I(I;A) = I(Z;A) + I(I;A|Z) must hold to floating point.
+
+    The whole fixed-anchor evaluation rests on this decomposition, because
+    ``retained = I(Z;A)/I(I;A)`` is only a fraction if the parts sum to the whole.
+    """
+    F, a, M = _toy_fingerprints()
+    r = ca.state_cmi(M, F, a)
+    assert abs(r["decomposition_error"]) < 1e-9, r
+    assert abs(r["i_cell_anchor"] - (r["i_state_anchor"] + r["cmi"])) < 1e-9
+
+
+def test_cmi_fast_form_equals_the_direct_sum():
+    """The entropy form must equal the literal sum_ik a_i M_ik KL(f_i || phi_k)."""
+    F, a, M = _toy_fingerprints()
+    g = M.T @ a
+    phi = (M.T @ (a[:, None] * F)) / g[:, None]
+    KL = ((F * np.log(np.maximum(F, 1e-300))).sum(1)[:, None]
+          - F @ np.log(np.maximum(phi, 1e-300)).T)
+    direct = float((a[:, None] * M * KL).sum())
+    assert abs(direct - ca.state_cmi(M, F, a)["cmi"]) < 1e-9
+
+
+def test_cmi_at_K1_equals_total_information_and_retains_nothing():
+    """One state can explain nothing, so CMI == I(cell;A) and retained == 0.
+
+    This is the fixed-anchor analogue of Degeneracy 3's K=1 limit -- but note the
+    contrast: with a LEARNED neighbour space L_pm goes to 0 at K=1, whereas here
+    CMI goes to its MAXIMUM. That inversion is exactly why fixed anchors cannot be
+    gamed by collapse.
+    """
+    F, a, _ = _toy_fingerprints()
+    r = ca.state_cmi(np.ones((len(F), 1)), F, a)
+    assert abs(r["cmi"] - r["i_cell_anchor"]) < 1e-9
+    ret, why = ca.retained_information(r["cmi"], r["i_cell_anchor"])
+    assert abs(ret) < 1e-9, (ret, why)
+
+
+def test_retained_information_refuses_an_uninformative_denominator():
+    """A low CMI on an uninformative coupling is not a success -- must be NaN."""
+    F, a, M = _toy_fingerprints()
+    flat = ca.independence_null(F, a)
+    r = ca.state_cmi(M, flat, a)
+    assert r["i_cell_anchor"] < 1e-9
+    val, why = ca.retained_information(r["cmi"], r["i_cell_anchor"])
+    assert np.isnan(val)
+    assert "uninformative" in why or "no cell-level" in why
+
+
+def test_independence_null_has_zero_cell_information():
+    F, a, _ = _toy_fingerprints()
+    assert ca.cell_information(ca.independence_null(F, a), a) < 1e-9
+
+
+def test_fixed_anchors_are_frozen_across_assignments():
+    """Anchors learned on a train split must reproduce exactly when re-applied."""
+    rng = np.random.default_rng(0)
+    Z = [rng.standard_normal((120, 5)) for _ in range(3)]
+    cen = ca.make_anchors(Z, 8, seed=0)
+    A1 = ca.assign_anchors(Z, cen)
+    A2 = ca.assign_anchors(Z, cen)
+    for x, y in zip(A1, A2):
+        assert np.array_equal(x, y)
+    # and each row is a distribution
+    for x in A1:
+        assert np.allclose(x.sum(1), 1.0)
+
+
+def test_logits_from_memberships_round_trips_through_softmax():
+    """Warm starts must reproduce the membership they came from."""
+    _, _, M = _toy_fingerprints()
+    U = ca.logits_from_memberships([M])[0]
+    back = np.exp(U); back /= back.sum(1, keepdims=True)
+    assert np.allclose(back, M, atol=1e-7)
+
+
+def test_logits_from_memberships_survives_saturation():
+    """Memberships hit exactly 1.000 in the real fits; log(0) must not appear."""
+    M = np.zeros((10, 4)); M[:, 0] = 1.0
+    U = ca.logits_from_memberships([M])[0]
+    assert np.isfinite(U).all()
+
+
+def test_gaussian_variant_is_the_sse_objective_at_a_specific_lambda_x():
+    """B1 with FROZEN sigma^2 is a reparameterisation, not a new objective.
+
+    L_gauss = SSE/(2 s2) + T*(d/2)*log(2 pi s2) = (d/(2 s2)) * (SSE/d) + const,
+    and the constant does not depend on M -- so the argmin is that of the SSE
+    objective at lambda_x = d/(2 s2). Guards the claim the ablation rests on.
+    """
+    import importlib.util as u
+    spec = u.spec_from_file_location(
+        "abl", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "06_expression_ablation.py"))
+    m = u.module_from_spec(spec); spec.loader.exec_module(m)
+
+    d, T, s2 = 30, 22, 4.7333
+    assert m.lambda_x_for("none", s2, d, 1.0) == 0.0
+    assert m.lambda_x_for("sse", s2, d, 1.0) == 1.0
+    assert abs(m.lambda_x_for("gaussian", s2, d, 1.0) - d / (2 * s2)) < 1e-12
+
+    # the two objectives must agree up to the M-independent constant
+    L_expr_sse = 3.5                               # = SSE/d for some assignment
+    SSE = L_expr_sse * d
+    lam = m.lambda_x_for("gaussian", s2, d, 1.0)
+    direct = SSE / (2 * s2) + m.gaussian_constant(s2, d, T)
+    viaLam = lam * L_expr_sse + m.gaussian_constant(s2, d, T)
+    assert abs(direct - viaLam) < 1e-9
