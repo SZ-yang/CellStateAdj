@@ -681,6 +681,100 @@ def cluster_stability_resampled(F_blocks: Sequence[np.ndarray], K: int, rng,
 
 
 # --------------------------------------------------------------------------
+# simplex KKT stationarity (issue 1 of the 2026-09-08 second review)
+# --------------------------------------------------------------------------
+
+def kkt_residual_from_logit_grad(g: np.ndarray, M: np.ndarray,
+                                 recover_floor: float = 1e-12,
+                                 active_tol: float = 1e-6) -> Dict[str, float]:
+    """First-order KKT residual for ``min L(M)  s.t.  sum_k M_ik = 1, M >= 0``.
+
+    EXACT DEFINITION
+    ----------------
+    With ``M = softmax(U)`` the softmax identity gives, per row,
+
+        g_k := dL/dU_k = M_k ( h_k - <M, h> ),      h := dL/dM
+
+    so the membership gradient is recoverable up to an additive constant as
+
+        htilde_k = g_k / M_k = h_k - <M, h>
+
+    The additive constant is irrelevant because the equality multiplier absorbs
+    it.  Writing ``lambda_hat`` for the mean of ``htilde`` over the ACTIVE
+    coordinates (``M_k > active_tol``), the KKT conditions are
+
+        active   (M_k > active_tol) :  htilde_k - lambda_hat = 0
+        boundary (M_k <= active_tol):  htilde_k - lambda_hat >= 0
+
+    -- at a boundary coordinate only an INWARD-pointing gradient is a violation,
+    because ``M_k`` cannot decrease further.  The residual per coordinate is
+    therefore
+
+        active   :  | htilde_k - lambda_hat |
+        boundary :  max(0, lambda_hat - htilde_k)
+
+    WHY NOT THE PREVIOUS VERSION
+    ----------------------------
+    The earlier implementation multiplied the recovered gradient back by ``M``.
+    Because ``sum_k g_k = 0`` holds identically for a softmax, that made the whole
+    expression collapse to ``g`` and the statistic was numerically EQUAL to
+    ``||dL/dU||`` (verified: difference 0.0e+00).  It therefore inherited exactly
+    the weakness it was introduced to remove -- at a saturated assignment
+    ``M_k -> 0`` drives ``g_k -> 0`` whatever ``h_k`` is, so the logit gradient
+    vanishes at points that are not stationary.  Dividing by ``M`` and NOT
+    multiplying back is what breaks that.
+
+    RECOVERABILITY
+    --------------
+    Where ``M_k`` has underflowed below ``recover_floor``, ``h_k`` cannot be
+    recovered from ``g_k`` at all (both are ~0 and the quotient is meaningless).
+    Those coordinates are counted in ``n_unrecoverable`` and the caller must treat
+    a nonzero count as "stationarity not assessable", never as convergence.
+    """
+    g = np.asarray(g, dtype=np.float64)
+    M = np.asarray(M, dtype=np.float64)
+    if g.shape != M.shape:
+        raise ValueError(f"shape mismatch: g {g.shape} vs M {M.shape}")
+
+    active = M > active_tol
+    recoverable = M > recover_floor
+    htilde = np.where(recoverable, g / np.maximum(M, recover_floor), np.nan)
+
+    res = np.zeros_like(M)
+    n_unrecoverable = 0
+    for i in range(M.shape[0]):
+        ai = active[i]
+        if not ai.any():                      # degenerate row: nothing to anchor
+            n_unrecoverable += int(M.shape[1])
+            continue
+        lam = float(np.nanmean(htilde[i][ai]))
+        # active coordinates: equality of the reduced gradient
+        res[i][ai] = np.abs(htilde[i][ai] - lam)
+        # boundary coordinates: only inward-pointing violations count
+        bi = ~ai
+        if bi.any():
+            hb = htilde[i][bi]
+            ok = np.isfinite(hb)
+            viol = np.zeros_like(hb)
+            viol[ok] = np.maximum(0.0, lam - hb[ok])
+            res[i][bi] = viol
+            n_unrecoverable += int((~ok).sum())
+
+    return {
+        "kkt_max": float(np.nanmax(res)) if res.size else 0.0,
+        "kkt_l2": float(np.sqrt(np.nansum(res ** 2))),
+        "n_active": int(active.sum()),
+        "n_boundary": int((~active).sum()),
+        "n_unrecoverable": int(n_unrecoverable),
+        "frac_boundary": float((~active).mean()),
+        "recover_floor": recover_floor, "active_tol": active_tol,
+        "definition": ("htilde = g/M (softmax identity); lambda = mean(htilde) over "
+                       "M>active_tol; residual = |htilde-lambda| on active and "
+                       "max(0, lambda-htilde) on boundary coordinates"),
+    }
+
+
+# --------------------------------------------------------------------------
 # splits and warm starts
 # --------------------------------------------------------------------------
 

@@ -98,8 +98,10 @@ def parse_args():
     p.add_argument("--tol-grad", type=float, default=1e-3,
                    help="strict convergence: max logit gradient norm")
     p.add_argument("--tol-kkt", type=float, default=1e-4,
-                   help="strict convergence: max projected membership-space (KKT) "
-                        "residual -- the condition that survives saturation")
+                   help="strict convergence: max simplex KKT residual in MEMBERSHIP "
+                        "space (see csa_anchors.kkt_residual_from_logit_grad). This "
+                        "is the condition that survives saturation; the logit "
+                        "gradient does not.")
     p.add_argument("--tol-dm", type=float, default=1e-4,
                    help="strict convergence: max final ||dM|| from the last iteration")
     p.add_argument("--sigma2-sensitivity", type=float, nargs="*",
@@ -145,48 +147,97 @@ def _score(chain, Z, mcfg, U):
 
 
 def _stationarity(chain, Z, mcfg, U):
-    """Gradient norm AND a projected membership-space (KKT) residual at ``U``.
+    """``(grad_norm, kkt)`` at ``U``; ``kkt`` from ``csa_anchors``.
 
-    [CRITICAL] Two problems with reading a raw logit gradient here.  First, the
-    2026-09-07 grids had memberships saturating at exactly 1.000, and softmax
-    gradients vanish there whatever the true stationarity -- so a small logit
-    gradient can mean "saturated", not "optimal".  Second, softmax is shift
-    invariant per row, so the logit gradient always has a null direction that
-    contributes nothing.
-
-    The projected residual fixes both: map the logit gradient into membership space
-    via the softmax Jacobian and project onto the simplex tangent (sum-zero per
-    row).  That is the quantity that must vanish at a constrained stationary point
-    of the membership problem, and it does not vanish merely because M saturated.
+    See :func:`csa_anchors.kkt_residual_from_logit_grad` for the exact definition.
+    The previous in-file version multiplied the recovered membership gradient back
+    by ``M``, which -- because ``sum_k dL/dU_k = 0`` identically for a softmax --
+    collapsed to ``||dL/dU||`` and gave numerically the same number (verified
+    difference 0.0e+00).  It therefore provided none of the claimed protection
+    against saturated memberships.
     """
     import torch
     model = CoarseGrainModel(chain, Z, mcfg, U_init=U)
     total, _ = model.objective(with_diagnostics=False)
     total.backward()
-    g2, kkt2 = 0.0, 0.0
+    gs, Ms = [], []
     with torch.no_grad():
         for u in model.U:
             if u.grad is None:
                 continue
-            g = u.grad
-            g2 += float((g ** 2).sum())
-            M = torch.softmax(u, dim=1)
-            # dL/dM from dL/dU via the softmax Jacobian:  gU = M * (gM - <gM, M>)
-            # so gM (up to the row-constant that the simplex projection removes) is
-            # gU / M; project onto the sum-zero tangent of the simplex.
-            gM = g / M.clamp_min(1e-12)
-            gM = gM - (gM * M).sum(1, keepdim=True)      # tangent projection
-            kkt2 += float(((gM * M) ** 2).sum())          # scaled (KKT) residual
-    return float(np.sqrt(g2)), float(np.sqrt(kkt2))
+            gs.append(u.grad.detach().double().cpu().numpy())
+            Ms.append(torch.softmax(u.double(), dim=1).cpu().numpy())
+    if not gs:
+        return float("nan"), {"kkt_max": float("nan"), "n_unrecoverable": -1}
+    g = np.vstack(gs); M = np.vstack(Ms)
+    grad_norm = float(np.sqrt((g ** 2).sum()))
+    kkt = ca.kkt_residual_from_logit_grad(g, M)
+    return grad_norm, kkt
 
 
-def _heldout_expression_nll(Z, M_list, idx_per_t, sigma2):
-    """Assignment-dependent Gaussian expression NLL on a cell subset.
+def strict_converged(res, grad_norm, kkt, dM, tol_grad, tol_kkt, tol_dM):
+    """``kkt`` may be a float (tests) or the dict from ``kkt_residual_from_logit_grad``."""
+    """Convergence that does not inherit the package's objective-plateau path.
 
-    ``sum_i a_i M_ik ||z_i - mu_k||^2 / (2 sigma^2)`` with ``mu_k`` recomputed on
-    the subset, so a state map that only fits the training batch is penalised here.
-    The assignment-independent constant is omitted -- it would shift every variant
-    by the same amount and obscure the comparison.
+    ``optimize.fit`` can report ``converged`` on ``patience`` consecutive
+    iterations of small RELATIVE OBJECTIVE CHANGE alone (optimize.py:331-338),
+    which a flat region satisfies without being stationary.  Every condition below
+    must hold, and all quantities must be finite.
+    """
+    reasons = []
+    if res.status != "converged":
+        reasons.append(f"package status {res.status}")
+    if not np.isfinite(res.objective):
+        reasons.append("objective not finite")
+    if not np.isfinite(grad_norm) or grad_norm > tol_grad:
+        reasons.append(f"grad norm {grad_norm:.3e} > {tol_grad:g}")
+    if isinstance(kkt, dict):
+        kmax = kkt.get("kkt_max", float("nan"))
+        n_unrec = kkt.get("n_unrecoverable", 0)
+        if n_unrec:
+            # M has underflowed, so dL/dM cannot be recovered from dL/dU there.
+            # "Not assessable" is the honest verdict; it must NOT pass as converged.
+            reasons.append(
+                f"stationarity NOT ASSESSABLE: {n_unrec} membership coordinate(s) "
+                f"underflowed below the recovery floor, so dL/dM cannot be recovered "
+                f"from dL/dU there (saturated assignment)")
+        if not np.isfinite(kmax) or kmax > tol_kkt:
+            reasons.append(f"simplex KKT residual {kmax:.3e} > {tol_kkt:g}")
+    else:
+        if not np.isfinite(kkt) or kkt > tol_kkt:
+            reasons.append(f"simplex KKT residual {kkt:.3e} > {tol_kkt:g}")
+    if dM is None or not np.isfinite(dM) or dM > tol_dM:
+        reasons.append(f"final membership change {dM} > {tol_dM:g}")
+    return (len(reasons) == 0), reasons
+
+
+
+# result-affecting arguments for THIS stage. [issue 7] The pipeline fingerprint
+# alone omits them, so two genuinely different experiments could land in the same
+# directory and interleave their artifacts.
+def subset_within_state_nll(Z, M_list, idx_per_t, sigma2):
+    """Subset-specific within-state Gaussian distortion.  DESCRIPTIVE, not held out.
+
+    [issue 5] This is NOT a held-out predictive NLL and must not be labelled one:
+
+      * the memberships were fitted using EVERY cell, so no subset of them is
+        held out;
+      * ``mu_k`` is recomputed on the very subset being scored, so the state means
+        are refitted rather than transferred.
+
+    What it does measure: how tight the states are, in nats, on that subset, at a
+    fixed sigma^2.  Useful for comparing variants on the same cells; useless as
+    evidence of generalisation.
+
+    A genuine held-out NLL is not available for this model as formulated: the
+    memberships are FREE PER-CELL PARAMETERS, i.e. the model is TRANSDUCTIVE and
+    has no encoder, so it cannot assign an entirely unseen cell at all.  Obtaining
+    one requires either an out-of-sample assignment rule (e.g. nearest expression
+    prototype, as ``selection.transfer_memberships`` does for K selection) or an
+    amortised encoder, which the handoff lists as a later extension.
+
+    The assignment-independent constant ``T*(d/2)*log(2 pi sigma^2)`` is omitted:
+    it would shift every variant equally and obscure the comparison.
     """
     tot = 0.0
     for t, M in enumerate(M_list):
@@ -205,49 +256,41 @@ def _heldout_expression_nll(Z, M_list, idx_per_t, sigma2):
     return float(tot)
 
 
-def strict_converged(res, grad_norm, kkt, dM, tol_grad, tol_kkt, tol_dM):
-    """Convergence that does not inherit the package's objective-plateau path.
+def _stage_hash(cfg_hash, args, keys):
+    import hashlib
+    payload = {k: (sorted(v) if isinstance(v, (list, tuple)) else v)
+               for k, v in ((k, getattr(args, k, None)) for k in keys)}
+    h = hashlib.sha1(json.dumps({"pipeline": cfg_hash, "stage": payload},
+                                sort_keys=True, default=str).encode()).hexdigest()
+    return h[:10]
 
-    ``optimize.fit`` can report ``converged`` on ``patience`` consecutive
-    iterations of small RELATIVE OBJECTIVE CHANGE alone (optimize.py:331-338),
-    which a flat region satisfies without being stationary.  Every condition below
-    must hold, and all quantities must be finite.
+
+def _resolve_outdir(base, cfg_hash, args, stage_keys=()):
+    """Config-hashed output directory that refuses to mix runs (issue 8/7).
+
+    The hash covers the pipeline fingerprint AND every stage-specific argument
+    that changes the result, so a collision can only mean "this exact experiment
+    already ran".  ``--overwrite`` then clears ONLY that directory, so stale
+    artifacts from a different grid can never sit beside new ones.
     """
-    reasons = []
-    if res.status != "converged":
-        reasons.append(f"package status {res.status}")
-    if not np.isfinite(res.objective):
-        reasons.append("objective not finite")
-    if not np.isfinite(grad_norm) or grad_norm > tol_grad:
-        reasons.append(f"grad norm {grad_norm:.3e} > {tol_grad:g}")
-    if not np.isfinite(kkt) or kkt > tol_kkt:
-        reasons.append(f"projected KKT residual {kkt:.3e} > {tol_kkt:g}")
-    if dM is None or not np.isfinite(dM) or dM > tol_dM:
-        reasons.append(f"final membership change {dM} > {tol_dM:g}")
-    return (len(reasons) == 0), reasons
-
-
-
-def _resolve_outdir(base, cfg_hash, args):
-    """Config-hashed output directory that refuses to mix runs (issue 8).
-
-    ``--overwrite`` on a shared directory is not enough: an earlier run at a
-    different K, epsilon or lambda grid leaves membership NPZ and CSV files behind
-    that a later glob or reducer will happily pick up.  Keying the directory on the
-    configuration hash means a collision can only mean "this exact configuration
-    already ran", and even then the directory must be empty or explicitly
-    overwritten.
-    """
-    out = os.path.join(base, f"cfg_{cfg_hash}")
+    full = _stage_hash(cfg_hash, args, stage_keys) if stage_keys else cfg_hash
+    out = os.path.join(base, f"cfg_{full}")
     os.makedirs(out, exist_ok=True)
-    existing = os.listdir(out)
-    if existing and not getattr(args, "overwrite", False):
-        raise SystemExit(
-            f"{out} already contains {len(existing)} file(s). Runs are keyed by "
-            f"configuration hash, so this means the same configuration already ran. "
-            f"Use a fresh --out, or --overwrite to replace it (which may leave "
-            f"stale artifacts from a different lambda/K grid beside the new ones).")
-    print(f"[out] config hash {cfg_hash} -> {out}")
+    existing = sorted(os.listdir(out))
+    if existing:
+        if not getattr(args, "overwrite", False):
+            raise SystemExit(
+                f"{out} already contains {len(existing)} file(s). Runs are keyed by "
+                f"pipeline + stage configuration, so this means this exact "
+                f"experiment already ran. Use a fresh --out, or --overwrite to "
+                f"replace it.")
+        # clear ONLY this exact directory, so nothing stale survives
+        import shutil
+        for name in existing:
+            q = os.path.join(out, name)
+            shutil.rmtree(q) if os.path.isdir(q) else os.remove(q)
+        print(f"[out] --overwrite: cleared {len(existing)} stale file(s) from {out}")
+    print(f"[out] config hash {full} -> {out}")
     return out
 
 def main():
@@ -275,7 +318,8 @@ def main():
     prov = provenance_block(run_fingerprint(
         Z, base_cfg, h5ad=args.h5ad, day_min=args.day_min, day_max=args.day_max,
         stride=1, n_per_timepoint=None, sampling_seed=args.seed))
-    args.out = _resolve_outdir(args.out, prov["fingerprint_hash"], args)
+    args.out = _resolve_outdir(args.out, prov["fingerprint_hash"], args,
+                               stage_keys=['K', 'variants', 'lambda_x_sse', 'sigma2', 'lambda_compress', 'continuation', 'reverse', 'n_cold', 'max_iter', 'tol_grad', 'tol_kkt', 'tol_dm', 'objective_tol', 'anchors', 'train_batch', 'seed'])
 
     # ---- fixed anchors for the CMI columns (frozen on the training batch) ----
     tr_idx, te_idx = ca.batch_split(data, args.train_batch)
@@ -390,9 +434,15 @@ def main():
             vU0 = ca.logits_from_memberships(vbase.M)
             print(f"[B]   {variant} baseline: status={vbase.status} "
                   f"n_iter={vbase.n_iter} L={vbase.objective:.4f}")
+        # [issue 2] Audit stationarity at the EXACT fitted logits. ``vU0`` is
+        # reconstructed via log(M) with a floor, which moves the point being tested
+        # -- and after saturation the floor is precisely where the gradient
+        # information lives. Reconstructed logits stay fine for warm starts.
+        vU_exact = [u.detach().cpu().numpy() for u in vbase.model.get_U()]
         gN, kN = _stationarity(chain, Z,
                                dc_replace(base_cfg.model, K=args.K, lambda_x=lx,
-                                          lambda_plus=0.0, lambda_minus=0.0), vU0)
+                                          lambda_plus=0.0, lambda_minus=0.0),
+                               vU_exact)
         dM0 = vbase.history[-1].get("dM") if vbase.history else None
         sc0, why0 = strict_converged(vbase, gN, kN, dM0, args.tol_grad,
                                      args.tol_kkt, args.tol_dm)
@@ -401,7 +451,12 @@ def main():
             "converged": bool(vbase.converged), "strict_converged": bool(sc0),
             "strict_reasons": why0, "objective": float(vbase.objective),
             "L_compress": vbase.terms.compress, "L_expr_SSE": vbase.terms.expression,
-            "grad_norm": gN, "kkt_residual": kN, "final_dM": dM0,
+            "grad_norm": gN, "kkt": kN,
+            "kkt_max": kN.get("kkt_max") if isinstance(kN, dict) else kN,
+            "kkt_n_unrecoverable": (kN.get("n_unrecoverable")
+                                    if isinstance(kN, dict) else None),
+            "final_dM": dM0,
+            "stationarity_evaluated_at": "exact fitted logits (model.get_U())",
             "min_state_mass": float(np.min(vbase.terms.g_min))}
         np.savez_compressed(
             os.path.join(args.out, f"memberships_{variant}_lpm0_baseline.npz"),
@@ -505,7 +560,12 @@ def main():
                         objective_minus_upper_bound=float(res.objective - ub),
                         grad_norm_reported=float(res.grad_norm),
                         grad_norm_at_solution=gn,
-                        kkt_residual=kkt, final_dM=dM_final,
+                        kkt_max=(kkt.get("kkt_max") if isinstance(kkt, dict) else kkt),
+                        kkt_n_unrecoverable=(kkt.get("n_unrecoverable")
+                                             if isinstance(kkt, dict) else None),
+                        kkt_frac_boundary=(kkt.get("frac_boundary")
+                                           if isinstance(kkt, dict) else None),
+                        final_dM=dM_final,
                         strict_converged=bool(sconv),
                         strict_reasons=sreasons,
                         L_compress=tm.compress, L_expr_SSE=tm.expression,
@@ -518,10 +578,13 @@ def main():
                         # offset to every variant.
                         expr_nll_assignment_dependent=float(
                             tm.expression * d / (2.0 * sigma2)),
-                        expr_nll_heldout=_heldout_expression_nll(
+                        # descriptive subset distortion, NOT held-out prediction
+                        expr_nll_other_batch_subset=subset_within_state_nll(
                             Z, res.M, te_idx, sigma2),
-                        expr_nll_train=_heldout_expression_nll(
+                        expr_nll_train_batch_subset=subset_within_state_nll(
                             Z, res.M, tr_idx, sigma2),
+                        expr_nll_is_heldout=False,
+                        model_is_transductive=True,
                         min_state_mass=float(np.min(tm.g_min)),
                         k_eff_mean=float(np.mean(tm.k_eff)),
                         k_eff_min=float(np.min(tm.k_eff)),
@@ -608,7 +671,8 @@ def main():
                         "upper_bound": best[0]["upper_bound"],
                         "beats_upper_bound": best[0].get("beats_upper_bound"),
                         "grad_norm": best[0]["grad_norm_at_solution"],
-                        "kkt_residual": best[0]["kkt_residual"],
+                        "kkt_max": best[0]["kkt_max"],
+                        "kkt_n_unrecoverable": best[0]["kkt_n_unrecoverable"],
                         "min_state_mass": best[0]["min_state_mass"],
                         "k_eff_mean": best[0]["k_eff_mean"],
                         "start": best[0]["start"], "seed": best[0]["seed"],

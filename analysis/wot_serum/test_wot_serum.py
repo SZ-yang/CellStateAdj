@@ -650,13 +650,244 @@ def test_strict_converged_rejects_non_finite_quantities():
     assert not ok2
 
 
-def test_heldout_expression_nll_is_finite_and_scales_with_sigma():
+def test_subset_nll_is_finite_and_scales_with_sigma():
+    """Renamed with the function (issue 5): it was never a held-out NLL."""
     m = _ablation_module()
     rng = np.random.default_rng(0)
     Z = [rng.standard_normal((40, 5)) for _ in range(3)]
     M = [np.eye(4)[rng.integers(0, 4, 40)] for _ in range(3)]
     idx = [np.arange(40) for _ in range(3)]
-    a = m._heldout_expression_nll(Z, M, idx, 1.0)
-    b = m._heldout_expression_nll(Z, M, idx, 2.0)
+    a = m.subset_within_state_nll(Z, M, idx, 1.0)
+    b = m.subset_within_state_nll(Z, M, idx, 2.0)
     assert np.isfinite(a) and a > 0
     assert abs(b - a / 2) < 1e-9      # NLL scales as 1/(2 sigma^2)
+
+
+# ===========================================================================
+# second scientific-readiness review (2026-09-08, revision c4789bf)
+# ===========================================================================
+
+def _softmax_np(U):
+    U = np.asarray(U, float)
+    E = np.exp(U - U.max(1, keepdims=True))
+    return E / E.sum(1, keepdims=True)
+
+
+def _linear_objective_grads(U, h):
+    """dL/dU for L(M) = sum_ik M_ik h_ik with M = softmax(U); h is dL/dM exactly."""
+    M = _softmax_np(U)
+    return M * (h - (M * h).sum(1, keepdims=True)), M
+
+
+# --- issue 1: the KKT residual must not be the logit-gradient norm ---------
+
+def test_kkt_residual_is_not_the_logit_gradient_norm():
+    """The previous implementation collapsed to ||dL/dU|| exactly.
+
+    Because sum_k dL/dU_k = 0 identically for a softmax, multiplying the recovered
+    membership gradient back by M reproduced dL/dU. Verified difference was
+    0.0e+00. The corrected statistic must differ.
+    """
+    rng = np.random.default_rng(0)
+    U = rng.standard_normal((30, 5))
+    h = rng.standard_normal((30, 5))
+    g, M = _linear_objective_grads(U, h)
+    gn = float(np.sqrt((g ** 2).sum()))
+    r = ca.kkt_residual_from_logit_grad(g, M)
+    assert abs(r["kkt_l2"] - gn) > 1e-6 * max(gn, 1.0), (r["kkt_l2"], gn)
+
+
+def test_kkt_residual_is_zero_at_an_interior_stationary_point():
+    """h constant across states => every interior coordinate is stationary."""
+    rng = np.random.default_rng(1)
+    U = rng.standard_normal((25, 4))
+    h = np.tile(rng.standard_normal((25, 1)), (1, 4))   # constant within each row
+    g, M = _linear_objective_grads(U, h)
+    r = ca.kkt_residual_from_logit_grad(g, M)
+    assert r["kkt_max"] < 1e-9, r
+    assert r["n_unrecoverable"] == 0
+
+
+def test_kkt_residual_catches_a_saturated_nonstationary_assignment():
+    """THE acceptance check: the logit gradient vanishes, the KKT residual must not.
+
+    Memberships near the simplex boundary drive dL/dU -> 0 regardless of dL/dM, so
+    a near-saturated non-stationary point looks converged to a logit-gradient test.
+    """
+    n, K = 20, 5
+    U = np.tile(np.r_[8.0, np.full(K - 1, -8.0)], (n, 1))   # M ~ [1, 3e-7, ...]
+    rng = np.random.default_rng(2)
+    h = rng.standard_normal((n, K)) * 3.0                    # far from stationary
+    g, M = _linear_objective_grads(U, h)
+    gn = float(np.sqrt((g ** 2).sum()))
+    r = ca.kkt_residual_from_logit_grad(g, M)
+    assert gn < 1e-4, f"expected a vanishing logit gradient, got {gn}"
+    assert r["kkt_max"] > 1.0, r
+    assert r["n_unrecoverable"] == 0
+    assert r["kkt_max"] / max(gn, 1e-300) > 1e3
+
+
+def test_kkt_reports_unrecoverable_when_memberships_underflow():
+    """Fully saturated logits: dL/dM is not recoverable and must be FLAGGED."""
+    n, K = 10, 4
+    U = np.tile(np.r_[60.0, np.full(K - 1, -60.0)], (n, 1))
+    rng = np.random.default_rng(3)
+    g, M = _linear_objective_grads(U, rng.standard_normal((n, K)))
+    r = ca.kkt_residual_from_logit_grad(g, M)
+    assert r["n_unrecoverable"] > 0, r
+
+
+def test_strict_converged_rejects_unrecoverable_stationarity():
+    m = _ablation_module()
+    ok, why = m.strict_converged(_FakeRes(), 1e-12,
+                                 {"kkt_max": 0.0, "n_unrecoverable": 17},
+                                 1e-12, 1e-3, 1e-4, 1e-4)
+    assert not ok
+    assert any("NOT ASSESSABLE" in w for w in why)
+
+
+def test_strict_converged_accepts_a_clean_kkt_dict():
+    m = _ablation_module()
+    ok, why = m.strict_converged(_FakeRes(), 1e-9,
+                                 {"kkt_max": 1e-11, "n_unrecoverable": 0},
+                                 1e-9, 1e-3, 1e-4, 1e-4)
+    assert ok and why == []
+
+
+def test_kkt_residual_is_finite_near_the_boundary():
+    n, K = 15, 4
+    U = np.tile(np.r_[10.0, np.full(K - 1, -10.0)], (n, 1))
+    rng = np.random.default_rng(4)
+    g, M = _linear_objective_grads(U, rng.standard_normal((n, K)))
+    r = ca.kkt_residual_from_logit_grad(g, M)
+    assert np.isfinite(r["kkt_max"]) and np.isfinite(r["kkt_l2"])
+
+
+# --- issue 3: A5 tiers and --train-batch -----------------------------------
+
+def _fingerprints_module():
+    import importlib.util as u
+    spec = u.spec_from_file_location(
+        "fa", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "05_fixed_anchor_fingerprints.py"))
+    m = u.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+def test_a5_tier4_scores_a_direction_absent_from_its_features():
+    """Tier 4 must use one direction as feature and the OTHER as target."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "05_fixed_anchor_fingerprints.py")).read()
+    blk = src[src.index("# ---- tier 4:"):src.index("# ---- tier 3x:")]
+    # features come from index fi, target from ti, and the two are complementary
+    assert 'for feat_dir, targ_dir in (("plus", "minus"), ("minus", "plus"))' in blk
+    # features come from the feature direction, the score from the OTHER direction
+    assert "Ftr = bF[tr_b][fi][t]" in blk and "Fte = bF[te_b][fi][t]" in blk
+    assert "Ftg = bF[te_b][ti][t]" in blk
+    assert "km.predict(Xte)" in blk and "M, Ftg," in blk
+    assert '"target_in_features": False' in blk
+    assert '"supports_prediction": True' in blk
+    # and a MATCHED expression comparator, else the number has no reference
+    assert '"expression": (Z[t][bidx[tr_b][t]], Z[t][bidx[te_b][t]])' in blk
+    # and the older transfer tier must NOT claim prediction
+    blk3 = src[src.index("# ---- tier 3: cross-batch TRANSFER"):src.index("# ---- tier 4:")]
+    assert '"supports_prediction": False' in blk3
+
+
+def test_a5_train_batch_argument_selects_the_training_batch():
+    """--train-batch must order the batch list, not be ignored for batches[0]."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "05_fixed_anchor_fingerprints.py")).read()
+    assert "batches = [str(args.train_batch)] + [b for b in all_batches" in src
+    assert "if str(args.train_batch) not in all_batches" in src
+
+
+def test_a2_perturbed_chains_are_built_once_outside_the_anchor_loop():
+    """Issue 6: chains must not be rebuilt per anchor resolution."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "05_fixed_anchor_fingerprints.py")).read()
+    a2 = src[src.index("# ================= A2 reproducibility"):
+             src.index("# ================= A3 relationship")]
+    build_at = a2.index("perturbations = []")
+    loop_at = a2.index("for nA in args.anchors:")
+    assert build_at < loop_at, "chains are still built inside the anchor loop"
+    assert a2.count("_chain_for(") == 4          # batch, bootstrap, eps, kappa
+    assert "chain_feasible" in a2 and "primary_eligible" in a2
+
+
+def test_a2_infeasible_perturbations_are_excluded_from_the_summary():
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "05_fixed_anchor_fingerprints.py")).read()
+    a2 = src[src.index("# ================= A2 reproducibility"):
+             src.index("# ================= A3 relationship")]
+    assert 'if not r["primary_eligible"]:' in a2 and "continue" in a2
+    assert "A2_chain_feasibility" in a2
+
+
+# --- issue 4: Stage 07 oracle labelling ------------------------------------
+
+def test_stage07_marks_fingerprint_clustering_as_an_oracle_ceiling():
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "07_cmi_compare.py")).read()
+    assert 'is_oracle = (src == "fingerprint")' in src
+    assert '"oracle_ceiling": is_oracle' in src
+    assert '"primary_eligible": not is_oracle' in src
+    assert 'df.loc[df.family == "expression", "primary_eligible"] = True' in src
+    assert "ORACLE CEILING" in src
+
+
+def test_stage07_split_names_do_not_claim_held_out():
+    """Workstream-B memberships are transductive; no cell subset is held out."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "07_cmi_compare.py")).read()
+    assert 'f"batch{args.train_batch}_subset"' in src
+    assert '"other_batch_subset"' in src
+    assert '"heldout": te_idx' not in src
+
+
+# --- issue 5: descriptive subset NLL vs genuine held-out NLL ---------------
+
+def test_subset_nll_is_named_and_documented_as_descriptive():
+    m = _ablation_module()
+    assert hasattr(m, "subset_within_state_nll")
+    assert not hasattr(m, "_heldout_expression_nll")
+    doc = m.subset_within_state_nll.__doc__
+    assert "not held out" in doc.lower()
+    assert "TRANSDUCTIVE" in doc
+
+
+def test_subset_nll_refits_state_means_on_the_scored_subset():
+    """Documents WHY it is not held out: mu_k is recomputed on the scored cells.
+
+    A genuinely held-out NLL would keep the training-batch means fixed; refitting
+    them makes the number a within-state distortion of that subset.
+    """
+    m = _ablation_module()
+    rng = np.random.default_rng(0)
+    Z = [np.vstack([rng.standard_normal((20, 3)),
+                    rng.standard_normal((20, 3)) + 10.0])]
+    M = [np.repeat(np.eye(2), 20, axis=0)]
+    half = [np.arange(20)]                     # only the first cluster
+    full = [np.arange(40)]
+    nll_half = m.subset_within_state_nll(Z, M, half, 1.0)
+    nll_full = m.subset_within_state_nll(Z, M, full, 1.0)
+    # refitting means on a subset can only lower its own distortion
+    assert nll_half < nll_full
+    assert m.subset_within_state_nll(Z, M, full, 2.0) == pytest.approx(nll_full / 2)
+
+
+# --- issue 7: stage-specific config hashes --------------------------------
+
+def test_stage_hash_changes_with_stage_specific_arguments():
+    m = _ablation_module()
+
+    class A:
+        overwrite = False
+    a = A(); a.K = 8; a.continuation = [0, 1]; a.variants = ["sse"]; a.reverse = False
+    b = A(); b.K = 8; b.continuation = [0, 1, 5]; b.variants = ["sse"]; b.reverse = False
+    keys = ["K", "continuation", "variants", "reverse"]
+    h1 = m._stage_hash("PIPE", a, keys)
+    h2 = m._stage_hash("PIPE", b, keys)
+    assert h1 != h2, "a different lambda grid must not share a directory"
+    assert m._stage_hash("PIPE", a, keys) == h1
+    assert m._stage_hash("OTHER", a, keys) != h1

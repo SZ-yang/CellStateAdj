@@ -147,19 +147,35 @@ def main():
         "baseline_K": sorted(args.baseline_K),
         "ablation_dir": os.path.abspath(args.ablation_dir) if args.ablation_dir else None,
         "annotation": args.annotation_anchors, "train_batch": args.train_batch,
+        "print_anchor_system": args.print_anchor_system,
+        "allow_unvalidated": args.allow_unvalidated_memberships,
+        "memberships": sorted(args.memberships or []),
+        "day_min": args.day_min, "day_max": args.day_max, "seed": args.seed,
     }, sort_keys=True).encode()).hexdigest()[:10]
     args.out = os.path.join(args.out, f"cfg_{key}")
     os.makedirs(args.out, exist_ok=True)
-    if os.listdir(args.out) and not args.overwrite:
-        raise SystemExit(
-            f"{args.out} already contains files -- the same comparison already ran. "
-            f"Use a fresh --out or --overwrite.")
+    existing = sorted(os.listdir(args.out))
+    if existing:
+        if not args.overwrite:
+            raise SystemExit(
+                f"{args.out} already contains {len(existing)} file(s) -- this exact "
+                f"comparison already ran. Use a fresh --out or --overwrite.")
+        import shutil
+        for name in existing:
+            q = os.path.join(args.out, name)
+            shutil.rmtree(q) if os.path.isdir(q) else os.remove(q)
+        print(f"[CMI] --overwrite: cleared {len(existing)} stale file(s)")
     print(f"[CMI] chain eps={chain.epsilon:g}  T={T}  K grid {args.baseline_K}  "
           f"-> cfg_{key}")
 
     tr_idx, te_idx = ca.batch_split(data, args.train_batch)
-    splits = [{"train": tr_idx[t], "heldout": te_idx[t], "all": np.arange(data.n_cells[t])}
-              for t in range(T)]
+    # [issue 4] These are NOT train/held-out for the LEARNED candidates:
+    # Workstream-B memberships are free per-cell parameters fitted using every
+    # cell, so no cell subset of them is held out.  The names say what they are --
+    # batch-stratified diagnostic subsets.
+    splits = [{f"batch{args.train_batch}_subset": tr_idx[t],
+               "other_batch_subset": te_idx[t],
+               "all_cells": np.arange(data.n_cells[t])} for t in range(T)]
 
     rows = []
     anchor_systems = {}
@@ -244,10 +260,19 @@ def main():
                     lab = km.predict(X)
                     M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
                     M_list.append(M)
-                rows += _score_candidate(f"{src}_kmeans_K{K}", M_list, Fp, Fm,
-                                         splits, data.tau,
-                                         extra={"anchor_system": asys,
-                                                "family": src, "requested_K": K})
+                    # [issue 4] Fingerprint clustering assigns evaluation cells
+                    # USING the very fingerprints it is then scored against, so it
+                    # is an oracle compression ceiling, not a predictive baseline.
+                    # Expression clustering stays primary: its assignment feature
+                    # (expression) is not the scoring target (the coupling).
+                    is_oracle = (src == "fingerprint")
+                    rows += _score_candidate(
+                        f"{src}_kmeans_K{K}", M_list, Fp, Fm, splits, data.tau,
+                        extra={"anchor_system": asys, "family": src,
+                               "requested_K": K,
+                               "target_in_features": is_oracle,
+                               "oracle_ceiling": is_oracle,
+                               "primary_eligible": not is_oracle})
 
         # ---- learned memberships from Workstream B --------------------------
         for path, meta in membership_sources:
@@ -289,7 +314,8 @@ def main():
                        "upper_bound": meta.get("upper_bound"),
                        "beats_upper_bound": meta.get("beats_upper_bound"),
                        "grad_norm": meta.get("grad_norm"),
-                       "kkt_residual": meta.get("kkt_residual"),
+                       "kkt_max": meta.get("kkt_max"),
+                       "kkt_n_unrecoverable": meta.get("kkt_n_unrecoverable"),
                        "primary_eligible": eligible})
             print(f"  scored {name}  "
                   f"[{'PRIMARY' if eligible else 'diagnostic only'}]"
@@ -310,8 +336,13 @@ def main():
             df["primary_eligible"] = True
         df["primary_eligible"] = (df["primary_eligible"]
                                   .infer_objects(copy=False).fillna(True).astype(bool))
-        # baselines are always primary; learned fits must pass the audit
-        df.loc[df.family != "learned", "primary_eligible"] = True
+        # expression baselines are primary; fingerprint clustering is an oracle
+        # ceiling (its scoring target is in its own features) and learned fits must
+        # pass the convergence + upper-bound audit
+        df.loc[df.family == "expression", "primary_eligible"] = True
+        if "oracle_ceiling" in df.columns:
+            df.loc[df["oracle_ceiling"].infer_objects(copy=False)
+                   .fillna(False).astype(bool), "primary_eligible"] = False
         df[~df.primary_eligible].to_csv(
             os.path.join(args.out, "diagnostic_excluded.csv"), index=False)
         grp = (df.groupby(["anchor_system", "candidate", "family", "direction", "split"])
@@ -330,15 +361,24 @@ def main():
         show = args.print_anchor_system or f"kmeans{sorted(args.anchors)[0]}"
         if show not in set(grp.anchor_system):
             show = sorted(set(grp.anchor_system))[0]
-        print(f"\n[CMI] forward, held-out, {show} anchors -- "
+        print(f"\n[CMI] forward, other-batch subset, {show} anchors -- "
               f"complexity vs sufficiency (PRIMARY rows only):")
-        sel = grp[(grp.direction == "plus") & (grp.split == "heldout")
+        sel = grp[(grp.direction == "plus") & (grp.split == "other_batch_subset")
                   & (grp.anchor_system == show)
                   & (grp.primary_eligible)].sort_values(["family", "rate"])
+        orc = grp[(grp.direction == "plus") & (grp.split == "other_batch_subset")
+                  & (grp.anchor_system == show)
+                  & (~grp.primary_eligible)
+                  & (grp.family == "fingerprint")].sort_values("rate")
         cols = ["candidate", "K", "k_eff", "rate", "min_state_mass", "cmi",
                 "i_cell_anchor", "retained", "n_retained_nan"]
         print(sel[cols].to_string(index=False, float_format=lambda v: f"{v:.4f}")
               if len(sel) else "  (no primary-eligible rows)")
+        if len(orc):
+            print("\n[CMI] ORACLE CEILING (fingerprint clustering -- its scoring "
+                  "target is in its own features; NOT a predictive baseline):")
+            print(orc[cols].to_string(index=False,
+                                      float_format=lambda v: f"{v:.4f}"))
         n_excl = int((~df.primary_eligible).sum())
         if n_excl:
             print(f"\n[CMI] {n_excl} row(s) excluded from primary comparison "

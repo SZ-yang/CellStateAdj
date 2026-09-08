@@ -135,26 +135,44 @@ def _fp_stats(F, a, n_pairs, rng, label):
 
 
 
-def _resolve_outdir(base, cfg_hash, args):
-    """Config-hashed output directory that refuses to mix runs (issue 8).
+# result-affecting arguments for THIS stage. [issue 7] The pipeline fingerprint
+# alone omits them, so two genuinely different experiments could land in the same
+# directory and interleave their artifacts.
+def _stage_hash(cfg_hash, args, keys):
+    import hashlib
+    payload = {k: (sorted(v) if isinstance(v, (list, tuple)) else v)
+               for k, v in ((k, getattr(args, k, None)) for k in keys)}
+    h = hashlib.sha1(json.dumps({"pipeline": cfg_hash, "stage": payload},
+                                sort_keys=True, default=str).encode()).hexdigest()
+    return h[:10]
 
-    ``--overwrite`` on a shared directory is not enough: an earlier run at a
-    different K, epsilon or lambda grid leaves membership NPZ and CSV files behind
-    that a later glob or reducer will happily pick up.  Keying the directory on the
-    configuration hash means a collision can only mean "this exact configuration
-    already ran", and even then the directory must be empty or explicitly
-    overwritten.
+
+def _resolve_outdir(base, cfg_hash, args, stage_keys=()):
+    """Config-hashed output directory that refuses to mix runs (issue 8/7).
+
+    The hash covers the pipeline fingerprint AND every stage-specific argument
+    that changes the result, so a collision can only mean "this exact experiment
+    already ran".  ``--overwrite`` then clears ONLY that directory, so stale
+    artifacts from a different grid can never sit beside new ones.
     """
-    out = os.path.join(base, f"cfg_{cfg_hash}")
+    full = _stage_hash(cfg_hash, args, stage_keys) if stage_keys else cfg_hash
+    out = os.path.join(base, f"cfg_{full}")
     os.makedirs(out, exist_ok=True)
-    existing = os.listdir(out)
-    if existing and not getattr(args, "overwrite", False):
-        raise SystemExit(
-            f"{out} already contains {len(existing)} file(s). Runs are keyed by "
-            f"configuration hash, so this means the same configuration already ran. "
-            f"Use a fresh --out, or --overwrite to replace it (which may leave "
-            f"stale artifacts from a different lambda/K grid beside the new ones).")
-    print(f"[out] config hash {cfg_hash} -> {out}")
+    existing = sorted(os.listdir(out))
+    if existing:
+        if not getattr(args, "overwrite", False):
+            raise SystemExit(
+                f"{out} already contains {len(existing)} file(s). Runs are keyed by "
+                f"pipeline + stage configuration, so this means this exact "
+                f"experiment already ran. Use a fresh --out, or --overwrite to "
+                f"replace it.")
+        # clear ONLY this exact directory, so nothing stale survives
+        import shutil
+        for name in existing:
+            q = os.path.join(out, name)
+            shutil.rmtree(q) if os.path.isdir(q) else os.remove(q)
+        print(f"[out] --overwrite: cleared {len(existing)} stale file(s) from {out}")
+    print(f"[out] config hash {full} -> {out}")
     return out
 
 def main():
@@ -193,7 +211,8 @@ def main():
     prov = provenance_block(run_fingerprint(
         Z, cfg_fp, h5ad=args.h5ad, day_min=args.day_min, day_max=args.day_max,
         stride=1, n_per_timepoint=None, sampling_seed=args.seed))
-    args.out = _resolve_outdir(args.out, prov["fingerprint_hash"], args)
+    args.out = _resolve_outdir(args.out, prov["fingerprint_hash"], args,
+                               stage_keys=['anchors', 'epsilon_neighbours', 'kappa_perturb', 'support', 'kappa', 'cost_scale_mode', 'train_batch', 'n_bootstrap', 'bootstrap_frac', 'n_pairs', 'perm_neighbors', 'match_K', 'stability_K', 'stability_reps', 'skip', 'seed'])
 
     state = {"provenance": prov, "chain_source": chain_src,
              "epsilon": float(chain.epsilon), "support": args.support,
@@ -257,10 +276,59 @@ def main():
         print("\n[A2] reproducibility in FROZEN anchor coordinates")
         a2 = []
 
-        def _compare(tag, chain_b, idx_b=None, nA=None):
-            """JS between the reference and a perturbed fingerprint, per interval.
+        # [issue 6] Build every perturbed chain ONCE, outside the anchor loop.
+        # The previous version built them inside it, so with anchors 20/40/80 the
+        # same OT chains were solved three times -- pure waste, since a chain does
+        # not depend on the anchor resolution at all.
+        perturbations = []          # (tag, chain, idx_or_None)
+        for b in sorted({str(v) for v in np.asarray(data.replicate[0]).astype(str)}):
+            idx, _ = ca.batch_split(data, b)
+            perturbations.append((f"batch_{b}",
+                                  _chain_for([Z[t][idx[t]] for t in range(T)],
+                                             data.tau, chain.epsilon, args.support,
+                                             args.kappa, args.cost_scale_mode,
+                                             scales, args.verbose), idx))
+        for r in range(args.n_bootstrap):
+            idx = ca.bootstrap_indices(data, args.bootstrap_frac, args.seed + r)
+            perturbations.append((f"bootstrap{r}",
+                                  _chain_for([Z[t][idx[t]] for t in range(T)],
+                                             data.tau, chain.epsilon, args.support,
+                                             args.kappa, args.cost_scale_mode,
+                                             scales, args.verbose), idx))
+        for e in args.epsilon_neighbours:
+            perturbations.append((f"eps_{e:g}",
+                                  _chain_for(Z, data.tau, e, args.support, args.kappa,
+                                             args.cost_scale_mode, scales,
+                                             args.verbose), None))
+        for kp in args.kappa_perturb:
+            perturbations.append((f"kappa_{kp}",
+                                  _chain_for(Z, data.tau, chain.epsilon, args.support,
+                                             kp, args.cost_scale_mode, scales,
+                                             args.verbose), None))
 
-            ``idx_b`` maps perturbed-set rows back to full-set rows so the two are
+        # feasibility of every perturbed chain is recorded, and an infeasible one is
+        # EXCLUDED from the primary summary rather than silently averaged in: an
+        # unbalanced coupling is not a noisy estimate of the coupling.
+        feas = {}
+        for tag, ch_b, _ in perturbations:
+            feas[tag] = {"feasible": bool(ch_b.feasible),
+                         "max_marginal_error": float(max(ch_b.marginal_errors())),
+                         "infeasible_intervals": ch_b.infeasible_intervals(),
+                         "kappas": ch_b.kappas}
+        state["analyses"]["A2_chain_feasibility"] = feas
+        n_bad = sum(1 for v in feas.values() if not v["feasible"])
+        print(f"  {len(perturbations)} perturbed chains built ONCE and reused across "
+              f"{len(args.anchors)} anchor resolutions; {n_bad} infeasible")
+        for tag, v in feas.items():
+            if not v["feasible"]:
+                print(f"    EXCLUDED from primary: {tag} infeasible at "
+                      f"{v['infeasible_intervals']} (max marg err "
+                      f"{v['max_marginal_error']:.2e})")
+
+        def _compare(tag, chain_b, idx_b, nA, feasible):
+            """JS between reference and perturbed fingerprints, per interval.
+
+            ``idx_b`` maps perturbed rows back to full-set rows so both sides are
             compared on the SAME cells; without it the comparison is meaningless.
             """
             Ab = ([A[nA][t][idx_b[t]] for t in range(T)] if idx_b is not None
@@ -277,6 +345,8 @@ def main():
                     a2.append({"analysis": "A2", "perturbation": tag,
                                "n_anchor_setting": nA, "t": t,
                                "day": float(data.tau[t]), "direction": lab,
+                               "chain_feasible": bool(feasible),
+                               "primary_eligible": bool(feasible),
                                "n_cells_compared": int(len(ref)),
                                "js_mean": float((w * js).sum()),
                                "js_median": float(np.median(js)),
@@ -285,37 +355,16 @@ def main():
                                "i_cell_perturbed": ca.cell_information(Fb, w)})
 
         for nA in args.anchors:
-            # batch hold-out: rebuild the chain on one batch only
-            for b in sorted({str(v) for v in np.asarray(data.replicate[0]).astype(str)}):
-                idx, _ = ca.batch_split(data, b)
-                Zb = [Z[t][idx[t]] for t in range(T)]
-                cb = _chain_for(Zb, data.tau, chain.epsilon, args.support,
-                                args.kappa, args.cost_scale_mode, scales, args.verbose)
-                _compare(f"batch_{b}", cb, idx, nA)
-            # bootstrap
-            for r in range(args.n_bootstrap):
-                idx = ca.bootstrap_indices(data, args.bootstrap_frac, args.seed + r)
-                Zb = [Z[t][idx[t]] for t in range(T)]
-                cb = _chain_for(Zb, data.tau, chain.epsilon, args.support,
-                                args.kappa, args.cost_scale_mode, scales, args.verbose)
-                _compare(f"bootstrap{r}", cb, idx, nA)
-            # neighbouring epsilon
-            for e in args.epsilon_neighbours:
-                cb = _chain_for(Z, data.tau, e, args.support, args.kappa,
-                                args.cost_scale_mode, scales, args.verbose)
-                _compare(f"eps_{e:g}", cb, None, nA)
-            # support perturbation
-            for kp in args.kappa_perturb:
-                cb = _chain_for(Z, data.tau, chain.epsilon, args.support, kp,
-                                args.cost_scale_mode, scales, args.verbose)
-                _compare(f"kappa_{kp}", cb, None, nA)
+            for tag, ch_b, idx_b in perturbations:
+                _compare(tag, ch_b, idx_b, nA, feas[tag]["feasible"])
             print(f"  nA={nA}: {len([r for r in a2 if r['n_anchor_setting']==nA])} "
                   f"interval comparisons")
 
         state["interval_rows"].extend(a2)
-        # aggregate per perturbation, but keep the per-interval spread visible
         agg = {}
         for r in a2:
+            if not r["primary_eligible"]:
+                continue
             key = (r["perturbation"], r["n_anchor_setting"], r["direction"])
             agg.setdefault(key, []).append(r["js_mean"])
         state["analyses"]["A2"] = {
@@ -453,7 +502,15 @@ def main():
 
         # batch-specific couplings, built ONCE on the shared frozen cost scale so
         # the two batches' fingerprints live in comparable units
-        batches = sorted({str(v) for v in np.asarray(data.replicate[0]).astype(str)})
+        all_batches = sorted({str(v) for v in np.asarray(data.replicate[0]).astype(str)})
+        # [issue 3] --train-batch must actually choose the training batch; the
+        # previous code always used batches[0] regardless of the argument.
+        if str(args.train_batch) not in all_batches:
+            raise SystemExit(
+                f"--train-batch {args.train_batch!r} is not present; available: "
+                f"{all_batches}")
+        batches = [str(args.train_batch)] + [b for b in all_batches
+                                             if b != str(args.train_batch)]
         if len(batches) < 2:
             print("  only one batch present: tiers 2/3 are not available")
         bidx, bchain, bF = {}, {}, {}
@@ -522,7 +579,11 @@ def main():
                                bidx[te_b][t], d_,
                                extra={"train_batch": tr_b, "eval_batch": te_b})
 
-                # ---- tier 3: independent couplings both sides --------------
+                # ---- tier 3: cross-batch TRANSFER (descriptive) ------------
+                # NOT prediction: the evaluation cells' own fingerprints are used
+                # both to assign them and as the scoring target, so the target is
+                # present in the features. Independent couplings remove batch
+                # leakage but not feature/target overlap.
                 for name in ("fingerprint", "expression"):
                     Xtr = _feat(name, t, bF[tr_b]) if name == "fingerprint" \
                         else Z[t][bidx[tr_b][t]]
@@ -535,12 +596,52 @@ def main():
                     lab = km.predict(Xte)
                     M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
                     for d_, F in (("plus", bF[te_b][0][t]), ("minus", bF[te_b][1][t])):
-                        _score("3_INDEPENDENT_COUPLING", name, K, t, M, F,
+                        _score("3_TRANSFER_DESCRIPTIVE", name, K, t, M, F,
                                np.arange(len(lab)), d_,
                                extra={"train_batch": tr_b, "eval_batch": te_b,
-                                      "coupling": "batch-specific, both sides"})
+                                      "coupling": "batch-specific, both sides",
+                                      "target_in_features": (name == "fingerprint"),
+                                      "supports_prediction": False})
 
-                # ---- tier 3x: cross-direction (feature != target) ----------
+                # ---- tier 4: INDEPENDENT BATCH *AND* CROSS-DIRECTION -------
+                # The only tier that supports a predictive claim: centroids from
+                # batch A's OWN coupling in ONE direction; batch B assigned from
+                # B's OWN coupling in that SAME direction; scored on B's OTHER
+                # direction. Neither the evaluation batch's coupling nor the scored
+                # target variable was seen when the states were defined.
+                for feat_dir, targ_dir in (("plus", "minus"), ("minus", "plus")):
+                    fi = 0 if feat_dir == "plus" else 1
+                    ti = 0 if targ_dir == "plus" else 1
+                    Ftr = bF[tr_b][fi][t]
+                    Fte = bF[te_b][fi][t]
+                    Ftg = bF[te_b][ti][t]
+                    if Ftr is None or Fte is None or Ftg is None:
+                        continue
+                    if Ftr.shape[1] != Fte.shape[1]:
+                        continue
+                    # A MATCHED expression comparator is essential: without it the
+                    # fingerprint number has nothing to be better or worse than.
+                    # Expression is trained and applied on the same batches, and
+                    # its feature is likewise not the scored target.
+                    cands = {f"fingerprint_{feat_dir}": (Ftr, Fte),
+                             "expression": (Z[t][bidx[tr_b][t]], Z[t][bidx[te_b][t]])}
+                    for cname, (Xtr, Xte) in cands.items():
+                        k = int(min(K, len(Xtr)))
+                        km = KMeans(n_clusters=k, n_init=4,
+                                    random_state=args.seed).fit(Xtr)
+                        lab = km.predict(Xte)
+                        M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
+                        _score("4_INDEPENDENT_CROSS", cname, K, t,
+                               M, Ftg, np.arange(len(lab)), targ_dir,
+                               extra={"train_batch": tr_b, "eval_batch": te_b,
+                                      "feature_direction": feat_dir,
+                                      "target_in_features": False,
+                                      "supports_prediction": True})
+
+                # ---- tier 3x: cross-direction on the FULL shared coupling --
+                # A cross-view association diagnostic, not held-out prediction:
+                # the feature and target are different variables, but both come
+                # from the same coupling over all cells.
                 for feat_dir, targ_dir in (("plus", "minus"), ("minus", "plus")):
                     Ffeat = Fp[nA_eval][t] if feat_dir == "plus" else Fm[nA_eval][t]
                     Ftarg = Fp[nA_eval][t] if targ_dir == "plus" else Fm[nA_eval][t]
@@ -550,13 +651,15 @@ def main():
                     km = KMeans(n_clusters=k, n_init=4, random_state=args.seed).fit(Ffeat)
                     lab = km.labels_
                     M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
-                    _score("3x_CROSS_DIRECTION", f"fingerprint_{feat_dir}", K, t,
+                    _score("3x_CROSS_VIEW_FULL", f"fingerprint_{feat_dir}", K, t,
                            M, Ftarg, np.arange(len(lab)), targ_dir,
-                           extra={"feature_direction": feat_dir})
+                           extra={"feature_direction": feat_dir,
+                                  "target_in_features": False,
+                                  "supports_prediction": False})
 
         state["interval_rows"].extend(a5)
-        for tier in ("1_DESCRIPTIVE", "2_OUT_OF_SAMPLE", "3_INDEPENDENT_COUPLING",
-                     "3x_CROSS_DIRECTION"):
+        for tier in ("1_DESCRIPTIVE", "2_OUT_OF_SAMPLE", "3_TRANSFER_DESCRIPTIVE",
+                     "3x_CROSS_VIEW_FULL", "4_INDEPENDENT_CROSS"):
             rows = [r for r in a5 if r["tier"] == tier and r["direction"] == "plus"]
             if not rows:
                 continue
@@ -577,8 +680,11 @@ def main():
                      "retained_fingerprint": float(np.nanmean(fpv)),
                      "retained_expression": float(np.nanmean(exv)) if exv else None,
                      "delta": (float(np.nanmean(fpv) - np.nanmean(exv)) if exv else None)})
-        print("  ONLY tiers 3 and 3x support a predictive claim. Tier 1 is "
-              "descriptive; tier 2 tests assignment transfer on a shared coupling.")
+        print("  ONLY tier 4 supports a predictive claim (independent evaluation "
+              "coupling AND a target variable absent from the features).")
+        print("  Tier 1 descriptive; tier 2 assignment transfer on a shared "
+              "coupling; tier 3 cross-batch transfer with the target still in the "
+              "features; tier 3x cross-view association on the full coupling.")
         state["analyses"]["A5"] = "done"
         _flush(state, args.out)
 
