@@ -48,6 +48,7 @@ import time
 
 import numpy as np
 
+import csa_anchors as ca
 import csa_wot
 from csa_wot import (DEFAULT_H5AD, RESULTS_ROOT, jdump, load_serum, make_cfg,
                      provenance_block, reserve_destinations, run_fingerprint)
@@ -77,7 +78,16 @@ def parse_args():
     p.add_argument("--n-per-timepoint", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=STAGE0_DIR)
-    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--allow-cross-arm-representation", action="store_true",
+                   help="proceed even though the representation was fitted across "
+                        "arms (Stage-0 requirement 1 asks for the arm restriction to "
+                        "precede the representation fit). Every downstream result "
+                        "must then be labelled as using a cross-arm basis.")
+    p.add_argument("--overwrite", action="store_true",
+                   help="NOT recommended: prefer a new --out. Output directories are "
+                        "config-hashed, so a collision means the same configuration "
+                        "was already built; overwriting can leave stale chains from a "
+                        "different epsilon set beside the new ones.")
     p.add_argument("--print-scan-command", action="store_true")
     p.add_argument("--verbose", type=int, default=1)
     return p.parse_args()
@@ -118,8 +128,15 @@ def main():
     epsilons = sorted(set(float(e) for e in args.epsilons))
 
     warn = _representation_warning(args.h5ad)
+    if warn and not args.allow_cross_arm_representation:
+        raise SystemExit(
+            f"\nStage-0 requirement 1 NOT met:\n  {warn}\n\n"
+            f"Run 00_serum_only_pca.py and point --h5ad at its output, or pass "
+            f"--allow-cross-arm-representation to proceed knowingly (every "
+            f"downstream result must then be labelled as cross-arm).")
     if warn:
-        print(f"\n[stage0] *** REPRESENTATION WARNING ***\n[stage0] {warn}\n")
+        print(f"\n[stage0] *** PROCEEDING WITH A CROSS-ARM REPRESENTATION "
+              f"(--allow-cross-arm-representation) ***\n[stage0] {warn}\n")
 
     data, Z, obs = load_serum(args.h5ad, day_min=args.day_min, day_max=args.day_max,
                               stride=args.stride, n_per_timepoint=args.n_per_timepoint,
@@ -136,10 +153,26 @@ def main():
                   else f"{args.cost_scale_mode}, single scale {scales[0]:.6g}")
     print(f"[stage0] cost scale: {scale_note}")
 
-    dest = [os.path.join(args.out, f"chain_eps{e:g}.npz") for e in epsilons]
-    dest.append(os.path.join(args.out, "chain_manifest.json"))
+    # identity: what every downstream job must be able to verify
+    identity = ca.identity_payload(
+        data, Z, h5ad=args.h5ad, day_min=args.day_min, day_max=args.day_max,
+        stride=args.stride, n_per_timepoint=args.n_per_timepoint, seed=args.seed,
+        arm_policy=csa_wot.CONDITIONING_STATEMENT)
+
+    # config-hashed directory so chains from different configurations cannot mix
+    cfg_hash = csa_wot.fingerprint_hash(run_fingerprint(
+        Z, cfg_probe, h5ad=args.h5ad, day_min=args.day_min, day_max=args.day_max,
+        stride=args.stride, n_per_timepoint=args.n_per_timepoint,
+        sampling_seed=args.seed))
+    out_dir = os.path.join(args.out, f"cfg_{cfg_hash}")
+    dest = [os.path.join(out_dir, f"chain_eps{e:g}.npz") for e in epsilons]
+    dest += [os.path.join(out_dir, f"chain_eps{e:g}.npz" + ca.IDENTITY_SUFFIX)
+             for e in epsilons]
+    dest.append(os.path.join(out_dir, "chain_manifest.json"))
     reserve_destinations(dest, overwrite=args.overwrite)
-    os.makedirs(args.out, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"[stage0] config hash {cfg_hash} -> {out_dir}")
+    args.out = out_dir
 
     manifest = {
         "git_commit": _git_commit(),
@@ -156,8 +189,8 @@ def main():
         "n_cells": data.n_cells,
         "tau": np.asarray(data.tau).tolist(),
         "dtau": np.asarray(data.dtau, dtype=float).tolist(),
-        "cell_ids": {str(float(data.tau[t])): np.asarray(data.obs[t]["index"]).tolist()
-                     for t in range(data.T)},
+        "identity": identity,
+        "cross_arm_representation_allowed": bool(args.allow_cross_arm_representation),
         "batch_labels": {str(float(data.tau[t])): np.asarray(data.replicate[t]).astype(str).tolist()
                          for t in range(data.T)},
         "chains": {},
@@ -174,6 +207,7 @@ def main():
         el = time.time() - t0
         csum = chain.summary()
         chain.save(path)
+        jdump(identity, path + ca.IDENTITY_SUFFIX)
 
         fp = run_fingerprint(Z, cfg, h5ad=args.h5ad, day_min=args.day_min,
                              day_max=args.day_max, stride=args.stride,
@@ -210,10 +244,16 @@ def main():
     if args.print_scan_command:
         print("\n[stage0] Stage-0 requirement 5 -- rerun the epsilon scan under the "
               "SAME scale and support:\n")
-        print(f"  sbatch 01_eps_scan.sbatch --day-min {args.day_min} "
-              f"--day-max {args.day_max} --stride 1 --support {args.support} "
-              f"--kappa {args.kappa} --cost-scale-mode {args.cost_scale_mode} "
-              f"--out {os.path.join(RESULTS_ROOT, 'eps_scan_stage0')}\n")
+        # 01_eps_scan.sbatch already passes --stride 1 --stride 2, and --stride is
+        # action="append", so repeating it here would silently add a third stride.
+        print(f"  sbatch 01_eps_scan.sbatch \\\n"
+              f"      --h5ad {os.path.abspath(args.h5ad)} \\\n"
+              f"      --day-min {args.day_min:g} --day-max {args.day_max:g} \\\n"
+              f"      --support {args.support} --kappa {args.kappa} \\\n"
+              f"      --cost-scale-mode {args.cost_scale_mode} \\\n"
+              f"      --out {os.path.join(RESULTS_ROOT, 'eps_scan_stage0_' + cfg_hash)}\n")
+        print("  (the sbatch already supplies --stride 1 --stride 2; --stride is "
+              "append-mode, so do not repeat it)\n")
 
 
 if __name__ == "__main__":

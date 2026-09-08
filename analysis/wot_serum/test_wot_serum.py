@@ -391,3 +391,272 @@ def test_gaussian_variant_is_the_sse_objective_at_a_specific_lambda_x():
     direct = SSE / (2 * s2) + m.gaussian_constant(s2, d, T)
     viaLam = lam * L_expr_sse + m.gaussian_constant(s2, d, T)
     assert abs(direct - viaLam) < 1e-9
+
+
+# ===========================================================================
+# scientific-readiness revision (2026-09-08 review)
+# ===========================================================================
+
+# --- issue 1: exact chain/data identity ------------------------------------
+
+class _FakeChain:
+    """Minimal stand-in with the attributes validate_chain_identity reads."""
+    def __init__(self, Z, tau, feasible=True):
+        self.Z = [np.asarray(z, float) for z in Z]
+        self.tau = np.asarray(tau, float)
+        self.T = len(Z)
+        self.n_cells = [len(z) for z in Z]
+        self.feasibility_tol = 1e-5
+        self._feasible = feasible
+
+    @property
+    def feasible(self):
+        return self._feasible
+
+    def infeasible_intervals(self):
+        return [] if self._feasible else [0]
+
+
+class _FakeData:
+    def __init__(self, Z, tau, ids):
+        self.T = len(Z)
+        self.n_cells = [len(z) for z in Z]
+        self.tau = np.asarray(tau, float)
+        self.obs = [{"index": np.asarray(i)} for i in ids]
+        self.replicate = [np.array(["1"] * len(z)) for z in Z]
+
+
+def _identity_fixture(seed=0, n=30, T=3, d=4):
+    rng = np.random.default_rng(seed)
+    Z = [rng.standard_normal((n, d)) for _ in range(T)]
+    tau = np.arange(float(T))
+    ids = [[f"t{t}_c{i}" for i in range(n)] for t in range(T)]
+    return Z, tau, ids
+
+
+def test_identity_accepts_the_matching_chain():
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    ident = ca.identity_payload(data, Z, h5ad="/x.h5ad", day_min=0, day_max=2,
+                                stride=1, n_per_timepoint=None, seed=0,
+                                arm_policy="serum")
+    ca.validate_chain_identity(_FakeChain(Z, tau), data, Z, identity=ident,
+                               require_identity_file=False)
+
+
+def test_identity_rejects_same_counts_but_different_cell_ids():
+    """The exact failure the n_cells-only check missed."""
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    ident = ca.identity_payload(data, Z, h5ad="/x.h5ad", day_min=0, day_max=2,
+                               stride=1, n_per_timepoint=None, seed=0,
+                               arm_policy="serum")
+    other_ids = [[f"OTHER_{i}" for i in range(len(Z[0]))] for _ in range(len(Z))]
+    data2 = _FakeData(Z, tau, other_ids)          # SAME counts, SAME Z
+    with pytest.raises(SystemExit) as e:
+        ca.validate_chain_identity(_FakeChain(Z, tau), data2, Z, identity=ident,
+                                   require_identity_file=False)
+    assert "cell identities" in str(e.value)
+
+
+def test_identity_rejects_same_cells_in_a_different_order():
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    ident = ca.identity_payload(data, Z, h5ad="/x.h5ad", day_min=0, day_max=2,
+                               stride=1, n_per_timepoint=None, seed=0,
+                               arm_policy="serum")
+    perm = np.random.default_rng(1).permutation(len(Z[0]))
+    shuffled_ids = [list(np.asarray(i)[perm]) for i in ids]
+    data2 = _FakeData(Z, tau, shuffled_ids)
+    with pytest.raises(SystemExit) as e:
+        ca.validate_chain_identity(_FakeChain(Z, tau), data2, Z, identity=ident,
+                                   require_identity_file=False)
+    assert "DIFFERENT ORDER" in str(e.value)
+
+
+def test_identity_rejects_a_different_representation_at_equal_shapes():
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    Z2 = [z + 0.01 for z in Z]                    # same shapes, different values
+    with pytest.raises(SystemExit) as e:
+        ca.validate_chain_identity(_FakeChain(Z, tau), data, Z2,
+                                   require_identity_file=False)
+    assert "representation content hash" in str(e.value)
+
+
+def test_identity_rejects_an_infeasible_chain():
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    with pytest.raises(SystemExit, match="INFEASIBLE"):
+        ca.validate_chain_identity(_FakeChain(Z, tau, feasible=False), data, Z,
+                                   require_identity_file=False)
+
+
+def test_identity_requires_the_sidecar_by_default(tmp_path):
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    with pytest.raises(SystemExit, match="identity sidecar"):
+        ca.validate_chain_identity(_FakeChain(Z, tau), data, Z,
+                                   chain_path=str(tmp_path / "chain.npz"))
+
+
+def test_check_identity_args_rejects_a_different_day_range():
+    Z, tau, ids = _identity_fixture()
+    data = _FakeData(Z, tau, ids)
+    ident = ca.identity_payload(data, Z, h5ad="/x.h5ad", day_min=8.25, day_max=18,
+                               stride=1, n_per_timepoint=None, seed=0,
+                               arm_policy="serum")
+    with pytest.raises(SystemExit, match="day_max"):
+        ca.check_identity_args(ident, h5ad="/x.h5ad", day_min=8.25, day_max=11.0,
+                               stride=1, n_per_timepoint=None, seed=0)
+
+
+# --- issue 3: simplex-aware cluster tendency ------------------------------
+
+def test_hopkins_style_tendency_is_retired():
+    with pytest.raises(NotImplementedError):
+        ca.cluster_tendency([np.eye(3)])
+
+
+def test_cluster_stability_negative_control_on_unclustered_simplex():
+    """NEGATIVE control: unclustered Dirichlet must NOT look reproducibly clustered."""
+    rng = np.random.default_rng(0)
+    X = rng.dirichlet(np.ones(20), size=600)
+    r = ca.cluster_stability_resampled([X], 2, np.random.default_rng(1), n_rep=6)
+    assert r["mean_ari"] < 0.5, r
+
+
+def test_cluster_stability_positive_control_on_two_clusters():
+    rng = np.random.default_rng(0)
+    X = np.vstack([rng.dirichlet(np.r_[np.ones(3) * 8, np.ones(17) * 0.1], 300),
+                   rng.dirichlet(np.r_[np.ones(17) * 0.1, np.ones(3) * 8], 300)])
+    r = ca.cluster_stability_resampled([X], 2, np.random.default_rng(1), n_rep=6)
+    assert r["mean_ari"] > 0.9, r
+
+
+def test_bimodality_separates_the_simplex_controls():
+    rng = np.random.default_rng(0)
+    Xu = rng.dirichlet(np.ones(20), size=600)
+    Xg = np.vstack([rng.dirichlet(np.r_[np.ones(3) * 8, np.ones(17) * 0.1], 300),
+                    rng.dirichlet(np.r_[np.ones(17) * 0.1, np.ones(3) * 8], 300)])
+    bu = ca.bimodality_clr([Xu])["bimodality_pc1"]
+    bg = ca.bimodality_clr([Xg])["bimodality_pc1"]
+    assert bu < 0.555 < bg, (bu, bg)
+
+
+def test_clr_maps_to_the_sum_zero_hyperplane():
+    rng = np.random.default_rng(0)
+    X = rng.dirichlet(np.ones(6), size=50)
+    assert np.allclose(ca.clr(X).sum(1), 0.0, atol=1e-9)
+
+
+# --- issue 4: expression-correspondence statistics ------------------------
+
+def _three_regimes(seed=0, n=500, kA=20, d=6):
+    rng = np.random.default_rng(seed)
+    Z = rng.standard_normal((n, d))
+    F_ind = rng.dirichlet(np.ones(kA) * 0.4, size=n)
+    lg = Z @ rng.standard_normal((d, kA)) * 2.0
+    F_sm = np.exp(lg); F_sm /= F_sm.sum(1, keepdims=True)
+    F_div = F_sm.copy()
+    loc = np.argsort(((Z - Z[0]) ** 2).sum(1))[:100]
+    F_div[loc] = rng.dirichlet(np.ones(kA) * 0.2, size=len(loc))
+    return Z, F_ind, F_sm, F_div
+
+
+def test_old_permutation_statistic_is_retired():
+    with pytest.raises(NotImplementedError):
+        ca.local_neighbourhood_permutation(np.eye(3), np.eye(3), np.ones(3) / 3)
+
+
+def test_concordance_is_flat_when_fingerprints_are_independent_of_expression():
+    Z, F_ind, _, _ = _three_regimes()
+    r = ca.expression_neighbour_concordance(Z, F_ind, seed=0)
+    assert 0.9 < r["ratio"] < 1.1, r
+
+
+def test_concordance_drops_when_fingerprints_are_smooth_in_expression():
+    Z, _, F_sm, _ = _three_regimes()
+    r = ca.expression_neighbour_concordance(Z, F_sm, seed=0)
+    assert r["ratio"] < 0.7, r
+
+
+def test_residual_fraction_separates_all_three_regimes():
+    """independent ~1, smooth << 1, and local divergence in between."""
+    Z, F_ind, F_sm, F_div = _three_regimes()
+    ri = ca.expression_predicts_fingerprint(Z, F_ind, seed=0)["residual_fraction"]
+    rs = ca.expression_predicts_fingerprint(Z, F_sm, seed=0)["residual_fraction"]
+    rd = ca.expression_predicts_fingerprint(Z, F_div, seed=0)["residual_fraction"]
+    assert ri > 0.8, ri
+    assert rs < 0.5, rs
+    assert rs < rd < ri, (rs, rd, ri)
+
+
+def test_expression_predictor_can_be_grouped_to_block_batch_leakage():
+    Z, _, F_sm, _ = _three_regimes()
+    g = np.tile(["a", "b"], len(Z) // 2)
+    r = ca.expression_predicts_fingerprint(Z, F_sm, seed=0, groups=g)
+    assert r["grouped"] is True and r["n_folds"] == 2
+
+
+# --- issue 6: strict convergence ------------------------------------------
+
+def _ablation_module():
+    import importlib.util as u
+    spec = u.spec_from_file_location(
+        "abl2", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "06_expression_ablation.py"))
+    m = u.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+class _FakeRes:
+    def __init__(self, status="converged", objective=1.0):
+        self.status = status
+        self.objective = objective
+
+
+def test_strict_converged_rejects_a_plateau_that_is_not_stationary():
+    """The package can report 'converged' on objective plateau alone."""
+    m = _ablation_module()
+    ok, why = m.strict_converged(_FakeRes(), grad_norm=1.0, kkt=1.0, dM=1.0,
+                                 tol_grad=1e-3, tol_kkt=1e-4, tol_dM=1e-4)
+    assert not ok
+    assert any("grad norm" in w for w in why)
+    assert any("KKT" in w for w in why)
+    assert any("membership change" in w for w in why)
+
+
+def test_strict_converged_rejects_a_nonconverged_status():
+    m = _ablation_module()
+    ok, why = m.strict_converged(_FakeRes(status="max_iter"), 1e-9, 1e-9, 1e-9,
+                                 1e-3, 1e-4, 1e-4)
+    assert not ok and any("max_iter" in w for w in why)
+
+
+def test_strict_converged_accepts_a_genuinely_stationary_point():
+    m = _ablation_module()
+    ok, why = m.strict_converged(_FakeRes(), 1e-9, 1e-11, 1e-9, 1e-3, 1e-4, 1e-4)
+    assert ok and why == []
+
+
+def test_strict_converged_rejects_non_finite_quantities():
+    m = _ablation_module()
+    ok, _ = m.strict_converged(_FakeRes(objective=float("nan")), 1e-9, 1e-11,
+                               1e-9, 1e-3, 1e-4, 1e-4)
+    assert not ok
+    ok2, _ = m.strict_converged(_FakeRes(), float("inf"), 1e-11, 1e-9,
+                                1e-3, 1e-4, 1e-4)
+    assert not ok2
+
+
+def test_heldout_expression_nll_is_finite_and_scales_with_sigma():
+    m = _ablation_module()
+    rng = np.random.default_rng(0)
+    Z = [rng.standard_normal((40, 5)) for _ in range(3)]
+    M = [np.eye(4)[rng.integers(0, 4, 40)] for _ in range(3)]
+    idx = [np.arange(40) for _ in range(3)]
+    a = m._heldout_expression_nll(Z, M, idx, 1.0)
+    b = m._heldout_expression_nll(Z, M, idx, 2.0)
+    assert np.isfinite(a) and a > 0
+    assert abs(b - a / 2) < 1e-9      # NLL scales as 1/(2 sigma^2)

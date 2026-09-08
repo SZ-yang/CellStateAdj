@@ -74,6 +74,9 @@ def parse_args():
     p.add_argument("--n-pairs", type=int, default=20000)
     p.add_argument("--perm-neighbors", type=int, default=30)
     p.add_argument("--perm-reps", type=int, default=20)
+    p.add_argument("--stability-K", type=int, nargs="+", default=[4, 8],
+                   help="A4: K values for resampled partition reproducibility")
+    p.add_argument("--stability-reps", type=int, default=8)
     p.add_argument("--match-K", type=int, nargs="+", default=[4, 8, 12, 20],
                    help="A5: matched complexity for fingerprint vs expression states")
     p.add_argument("--skip", nargs="*", default=[],
@@ -131,12 +134,32 @@ def _fp_stats(F, a, n_pairs, rng, label):
     }
 
 
+
+def _resolve_outdir(base, cfg_hash, args):
+    """Config-hashed output directory that refuses to mix runs (issue 8).
+
+    ``--overwrite`` on a shared directory is not enough: an earlier run at a
+    different K, epsilon or lambda grid leaves membership NPZ and CSV files behind
+    that a later glob or reducer will happily pick up.  Keying the directory on the
+    configuration hash means a collision can only mean "this exact configuration
+    already ran", and even then the directory must be empty or explicitly
+    overwritten.
+    """
+    out = os.path.join(base, f"cfg_{cfg_hash}")
+    os.makedirs(out, exist_ok=True)
+    existing = os.listdir(out)
+    if existing and not getattr(args, "overwrite", False):
+        raise SystemExit(
+            f"{out} already contains {len(existing)} file(s). Runs are keyed by "
+            f"configuration hash, so this means the same configuration already ran. "
+            f"Use a fresh --out, or --overwrite to replace it (which may leave "
+            f"stale artifacts from a different lambda/K grid beside the new ones).")
+    print(f"[out] config hash {cfg_hash} -> {out}")
+    return out
+
 def main():
     args = parse_args()
     rng = np.random.default_rng(args.seed)
-    os.makedirs(args.out, exist_ok=True)
-    if os.listdir(args.out) and not args.overwrite:
-        raise SystemExit(f"{args.out} is not empty; pass --overwrite")
 
     data, Z, obs = load_serum(args.h5ad, day_min=args.day_min, day_max=args.day_max,
                               seed=args.seed, verbose=args.verbose)
@@ -149,28 +172,28 @@ def main():
                                           verbose=0).coupling.cost_scale_mode)
 
     # ---- the chain -------------------------------------------------------
-    if args.chain:
-        chain = ReferenceChain.load(args.chain)
-        if chain.n_cells != data.n_cells:
-            raise SystemExit(
-                f"chain {args.chain} has n_cells={chain.n_cells[:4]}... but the loaded "
-                f"data has {data.n_cells[:4]}... -- different cell sets cannot share a "
-                f"chain. Rebuild Stage 0 with these day/stride/subsample settings.")
-        chain_src = args.chain
-        print(f"[A] using Stage-0 chain {args.chain} (eps={chain.epsilon:g})")
-    else:
-        print("[A] *** no --chain given: building one here. The plan requires ONE "
-              "shared Stage-0 chain; results from a locally built chain must be "
-              "labelled as such. ***")
-        chain = _chain_for(Z, data.tau, args.epsilon, args.support, args.kappa,
-                           args.cost_scale_mode, scales, args.verbose)
-        chain_src = "built locally (NOT the Stage-0 chain)"
+    if not args.chain:
+        raise SystemExit(
+            "--chain is required. The plan mandates ONE shared Stage-0 chain "
+            "(requirement 7: 'do not silently rebuild it inside individual jobs'); "
+            "building one here would make these results incomparable with "
+            "Workstream B. Run 00_stage0_chain.py first.")
+    chain = ReferenceChain.load(args.chain)
+    identity = ca.validate_chain_identity(chain, data, Z, chain_path=args.chain)
+    ca.check_identity_args(identity, h5ad=args.h5ad, day_min=args.day_min,
+                           day_max=args.day_max, stride=1, n_per_timepoint=None,
+                           seed=args.seed)
+    chain_src = os.path.abspath(args.chain)
+    print(f"[A] Stage-0 chain {os.path.basename(args.chain)} (eps={chain.epsilon:g}) "
+          f"-- identity verified: {chain.T} timepoints, cell ids and order, tau, "
+          f"representation hash, feasibility")
 
     cfg_fp = make_cfg(epsilon=chain.epsilon, support=args.support, kappa=args.kappa,
                       cost_scale_mode=args.cost_scale_mode, seed=args.seed, verbose=0)
     prov = provenance_block(run_fingerprint(
         Z, cfg_fp, h5ad=args.h5ad, day_min=args.day_min, day_max=args.day_max,
         stride=1, n_per_timepoint=None, sampling_seed=args.seed))
+    args.out = _resolve_outdir(args.out, prov["fingerprint_hash"], args)
 
     state = {"provenance": prov, "chain_source": chain_src,
              "epsilon": float(chain.epsilon), "support": args.support,
@@ -308,6 +331,8 @@ def main():
     # ================= A3 relationship to expression =====================
     if "A3" not in args.skip:
         print("\n[A3] fingerprint structure vs expression geometry")
+        print("     (the old global-I permutation statistic was removed: it responded "
+              "to fingerprint diversity, not to expression correspondence)")
         a3 = []
         for nA in args.anchors:
             for t in range(T):
@@ -321,29 +346,36 @@ def main():
                     dz = np.sqrt(((Z[t][i[m]] - Z[t][j[m]]) ** 2).sum(1))
                     dfp = ca.js_divergence(F[i[m]], F[j[m]])
                     ok = np.isfinite(dz) & np.isfinite(dfp)
-                    perm = ca.local_neighbourhood_permutation(
-                        Z[t], F, a_full[t], args.perm_neighbors, args.perm_reps,
-                        args.seed + t)
+                    # does expression LOCALITY predict fingerprint similarity?
+                    conc = ca.expression_neighbour_concordance(
+                        Z[t], F, n_neighbors=args.perm_neighbors,
+                        n_pairs=args.n_pairs, seed=args.seed + t)
+                    # cross-fitted, batch-grouped: what survives an expression model?
+                    rep = np.asarray(data.replicate[t]).astype(str)
+                    pred = ca.expression_predicts_fingerprint(
+                        Z[t], F, n_neighbors=args.perm_neighbors,
+                        seed=args.seed + t, groups=rep)
                     a3.append({
                         "analysis": "A3", "n_anchor_setting": nA, "t": t,
                         "day": float(data.tau[t]), "direction": lab,
-                        "spearman_dz_vs_dfingerprint": float(
-                            _spearman(dz[ok], dfp[ok])),
-                        "pearson_dz_vs_dfingerprint": float(
-                            np.corrcoef(dz[ok], dfp[ok])[0, 1]) if ok.sum() > 2 else float("nan"),
-                        "perm_observed_i_cell": perm["observed"],
-                        "perm_null_mean": perm["null_mean"],
-                        "perm_null_sd": perm["null_sd"],
-                        "perm_p_value": perm["p_value"],
-                        "perm_z": perm["z"],
+                        "spearman_dz_vs_dfingerprint": float(_spearman(dz[ok], dfp[ok])),
+                        "js_neighbour": conc["js_neighbour"],
+                        "js_random": conc["js_random"],
+                        "js_neighbour_over_random": conc["ratio"],
+                        "kl_to_expression": pred["kl_to_expression"],
+                        "kl_to_marginal": pred["kl_to_marginal"],
+                        "residual_fraction": pred["residual_fraction"],
+                        "prediction_grouped_by_batch": pred["grouped"],
                     })
         state["interval_rows"].extend(a3)
         for nA in args.anchors:
             rr = [r for r in a3 if r["n_anchor_setting"] == nA]
-            print(f"  nA={nA:3d}: Spearman(expr dist, fingerprint JS) mean "
-                  f"{np.mean([r['spearman_dz_vs_dfingerprint'] for r in rr]):.3f}; "
-                  f"neighbourhood-permutation p<0.05 in "
-                  f"{sum(1 for r in rr if r['perm_p_value'] < 0.05)}/{len(rr)} cases")
+            print(f"  nA={nA:3d}: JS(neighbour)/JS(random) mean "
+                  f"{np.nanmean([r['js_neighbour_over_random'] for r in rr]):.3f}  "
+                  f"| residual fraction after a cross-fitted expression predictor "
+                  f"{np.nanmean([r['residual_fraction'] for r in rr]):.3f}")
+        print("     ratio ~1 and residual ~1 -> no expression correspondence; "
+              "both <<1 -> the fingerprint is largely an expression readout")
         state["analyses"]["A3"] = "done"
         _flush(state, args.out)
 
@@ -360,61 +392,193 @@ def main():
                 r["concat_dim"] = int(R.shape[1])
                 r.update(_pca_spectrum(R, prefix="concat"))
                 r["intrinsic_dim_twonn"] = _twonn(R, rng)
-                r["hopkins"] = _hopkins(R, rng)
+                # Hopkins removed: its box null lies off the simplex and inflated
+                # the statistic (0.77-0.84 on UNCLUSTERED Dirichlet samples).
+                # keys already read 'bimodality_pcN'; do not re-prefix them
+                r.update({k: v for k, v in ca.bimodality_clr(parts, rng=rng).items()
+                          if k.startswith("bimodality_pc")})
+                for Ks in args.stability_K:
+                    st = ca.cluster_stability_resampled(parts, Ks, rng,
+                                                        n_rep=args.stability_reps)
+                    r[f"partition_ari_K{Ks}"] = st["mean_ari"]
                 a4.append(r)
         state["interval_rows"].extend(a4)
         print(f"  intrinsic dim (TwoNN) mean "
-              f"{np.nanmean([r['intrinsic_dim_twonn'] for r in a4]):.2f}; "
-              f"Hopkins mean {np.nanmean([r['hopkins'] for r in a4]):.3f} "
-              f"(~0.5 = no cluster tendency, ->1 = clustered)")
+              f"{np.nanmean([r['intrinsic_dim_twonn'] for r in a4]):.2f}")
+        print(f"  bimodality of leading CLR PC mean "
+              f"{np.nanmean([r.get('bimodality_pc1', np.nan) for r in a4]):.3f} "
+              f"(>0.555 suggests bimodal; controls 0.32 unclustered / 0.76 clustered)")
+        for Ks in args.stability_K:
+            v = [r.get(f'partition_ari_K{Ks}', np.nan) for r in a4]
+            print(f"  partition reproducibility K={Ks}: mean ARI "
+                  f"{np.nanmean(v):.3f} (controls ~0.15-0.21 unclustered / 1.00 "
+                  f"for two clear clusters)")
         state["analyses"]["A4"] = "done"
         _flush(state, args.out)
 
-    # ================= A5 held-out predictive comparison =================
+    # ================= A5 predictive comparison ==========================
+    #
+    # [CRITICAL] The first version of A5 was NOT held-out prediction and its
+    # "+0.033 held-out" number must not be cited.  The fingerprints used as
+    # clustering FEATURES were built from the full-chain coupling, which involves
+    # every cell including the ones being scored, and they were then scored
+    # against the SAME fingerprints.  Feature and evaluation target were identical
+    # and the coupling had already seen the "held-out" cells.
+    #
+    # Three tiers are reported here, labelled so they cannot be conflated:
+    #
+    #   tier 1  DESCRIPTIVE            fit and score on the same cells and the same
+    #                                  fingerprints. Says how compressible the
+    #                                  fingerprints are, nothing about prediction.
+    #   tier 2  OUT_OF_SAMPLE          centroids from batch A, assignment of batch B
+    #                                  cells, still scored on the shared full-chain
+    #                                  coupling. Tests assignment transfer only.
+    #   tier 3  INDEPENDENT_COUPLING   centroids learned on fingerprints from batch
+    #                                  A's OWN coupling; batch B cells assigned from
+    #                                  fingerprints built from batch B's OWN
+    #                                  coupling; scored on batch B's coupling. No
+    #                                  quantity in the evaluation was touched by the
+    #                                  training batch.
+    #   tier 3x CROSS_DIRECTION        states learned from forward fingerprints and
+    #                                  scored on BACKWARD CMI (and vice versa), so
+    #                                  the feature and the target are different
+    #                                  variables even within one coupling.
+    #
+    # Only tiers 3 and 3x support a claim about prediction.
     if "A5" not in args.skip:
-        print("\n[A5] fingerprint states vs expression states at matched K "
-              "(scored by held-out fixed-anchor CMI)")
+        print("\n[A5] predictive comparison -- three explicitly separated tiers")
         from sklearn.cluster import KMeans
         a5 = []
         nA_eval = max(args.anchors)
+
+        # batch-specific couplings, built ONCE on the shared frozen cost scale so
+        # the two batches' fingerprints live in comparable units
+        batches = sorted({str(v) for v in np.asarray(data.replicate[0]).astype(str)})
+        if len(batches) < 2:
+            print("  only one batch present: tiers 2/3 are not available")
+        bidx, bchain, bF = {}, {}, {}
+        for b in batches:
+            idx, _ = ca.batch_split(data, b)
+            bidx[b] = idx
+            Zb = [Z[t][idx[t]] for t in range(T)]
+            bchain[b] = _chain_for(Zb, data.tau, chain.epsilon, args.support,
+                                   args.kappa, args.cost_scale_mode, scales,
+                                   args.verbose)
+            Ab = [A[nA_eval][t][idx[t]] for t in range(T)]
+            bF[b] = ca.fixed_fingerprints(bchain[b], Ab)
+            print(f"  batch {b}: independent coupling built "
+                  f"(feasible={bchain[b].feasible}, "
+                  f"{sum(len(i) for i in idx)} cells)")
+
+        def _feat(kind, t, F_src):
+            if kind == "expression":
+                return Z[t]
+            parts = [x for x in (F_src[1][t], F_src[0][t]) if x is not None]
+            return np.hstack(parts)
+
+        def _score(tier, name, K, t, M, F, idx, direction, extra=None):
+            if F is None or len(idx) < 5:
+                return
+            w = np.full(len(idx), 1.0 / len(idx))
+            c = ca.state_cmi(M, F, w)
+            ret, why = ca.retained_information(c["cmi"], c["i_cell_anchor"])
+            row = {"analysis": "A5", "tier": tier, "states_from": name, "K": K,
+                   "t": t, "day": float(data.tau[t]), "direction": direction,
+                   "n_cells": int(len(idx)), **c, "retained": ret,
+                   "retained_note": why}
+            if extra:
+                row.update(extra)
+            a5.append(row)
+
         for K in args.match_K:
             for t in range(T):
-                parts = [x for x in (Fm[nA_eval][t], Fp[nA_eval][t]) if x is not None]
-                R = np.hstack(parts)
-                rows = {}
-                for name, Xfit in (("fingerprint", R), ("expression", Z[t])):
-                    # fit on the training batch, assign everyone -> held out by batch
-                    km = KMeans(n_clusters=min(K, len(tr_idx[t])), n_init=4,
-                                random_state=args.seed)
-                    km.fit(Xfit[tr_idx[t]])
-                    lab = km.predict(Xfit)
-                    M = np.zeros((len(lab), km.n_clusters)); M[np.arange(len(lab)), lab] = 1.0
-                    for lab_dir, F in (("plus", Fp[nA_eval][t]), ("minus", Fm[nA_eval][t])):
-                        if F is None:
-                            continue
-                        for split, idx in (("train", tr_idx[t]), ("heldout", te_idx[t])):
-                            w = uniform_weights(len(idx))
-                            c = ca.state_cmi(M[idx], F[idx], w)
-                            ret, why = ca.retained_information(c["cmi"], c["i_cell_anchor"])
-                            a5.append({"analysis": "A5", "K": K, "t": t,
-                                       "day": float(data.tau[t]),
-                                       "states_from": name, "direction": lab_dir,
-                                       "split": split, **c,
-                                       "retained": ret, "retained_note": why})
+                Ffull = (Fp[nA_eval], Fm[nA_eval])
+                # ---- tier 1: descriptive (same cells, same fingerprints) ----
+                for name in ("fingerprint", "expression"):
+                    X = _feat(name, t, Ffull)
+                    k = int(min(K, len(X)))
+                    km = KMeans(n_clusters=k, n_init=4, random_state=args.seed).fit(X)
+                    lab = km.labels_
+                    M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
+                    for d_, F in (("plus", Fp[nA_eval][t]), ("minus", Fm[nA_eval][t])):
+                        _score("1_DESCRIPTIVE", name, K, t, M, F,
+                               np.arange(data.n_cells[t]), d_)
+
+                if len(batches) < 2:
+                    continue
+                tr_b, te_b = batches[0], batches[1]
+
+                # ---- tier 2: out-of-sample assignment, shared coupling ------
+                for name in ("fingerprint", "expression"):
+                    X = _feat(name, t, Ffull)
+                    k = int(min(K, len(bidx[tr_b][t])))
+                    km = KMeans(n_clusters=k, n_init=4,
+                                random_state=args.seed).fit(X[bidx[tr_b][t]])
+                    lab = km.predict(X)
+                    M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
+                    for d_, F in (("plus", Fp[nA_eval][t]), ("minus", Fm[nA_eval][t])):
+                        _score("2_OUT_OF_SAMPLE", name, K, t,
+                               M[bidx[te_b][t]], None if F is None else F[bidx[te_b][t]],
+                               bidx[te_b][t], d_,
+                               extra={"train_batch": tr_b, "eval_batch": te_b})
+
+                # ---- tier 3: independent couplings both sides --------------
+                for name in ("fingerprint", "expression"):
+                    Xtr = _feat(name, t, bF[tr_b]) if name == "fingerprint" \
+                        else Z[t][bidx[tr_b][t]]
+                    Xte = _feat(name, t, bF[te_b]) if name == "fingerprint" \
+                        else Z[t][bidx[te_b][t]]
+                    if Xtr.shape[1] != Xte.shape[1]:
+                        continue
+                    k = int(min(K, len(Xtr)))
+                    km = KMeans(n_clusters=k, n_init=4, random_state=args.seed).fit(Xtr)
+                    lab = km.predict(Xte)
+                    M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
+                    for d_, F in (("plus", bF[te_b][0][t]), ("minus", bF[te_b][1][t])):
+                        _score("3_INDEPENDENT_COUPLING", name, K, t, M, F,
+                               np.arange(len(lab)), d_,
+                               extra={"train_batch": tr_b, "eval_batch": te_b,
+                                      "coupling": "batch-specific, both sides"})
+
+                # ---- tier 3x: cross-direction (feature != target) ----------
+                for feat_dir, targ_dir in (("plus", "minus"), ("minus", "plus")):
+                    Ffeat = Fp[nA_eval][t] if feat_dir == "plus" else Fm[nA_eval][t]
+                    Ftarg = Fp[nA_eval][t] if targ_dir == "plus" else Fm[nA_eval][t]
+                    if Ffeat is None or Ftarg is None:
+                        continue
+                    k = int(min(K, len(Ffeat)))
+                    km = KMeans(n_clusters=k, n_init=4, random_state=args.seed).fit(Ffeat)
+                    lab = km.labels_
+                    M = np.zeros((len(lab), k)); M[np.arange(len(lab)), lab] = 1.0
+                    _score("3x_CROSS_DIRECTION", f"fingerprint_{feat_dir}", K, t,
+                           M, Ftarg, np.arange(len(lab)), targ_dir,
+                           extra={"feature_direction": feat_dir})
+
         state["interval_rows"].extend(a5)
-        for K in args.match_K:
-            for split in ("train", "heldout"):
-                fr = [r for r in a5 if r["K"] == K and r["split"] == split
-                      and r["direction"] == "plus"]
-                fp_ = np.mean([r["retained"] for r in fr if r["states_from"] == "fingerprint"])
-                ex = np.mean([r["retained"] for r in fr if r["states_from"] == "expression"])
-                print(f"  K={K:3d} {split:8s} forward retained information: "
-                      f"fingerprint states {fp_:.4f} vs expression states {ex:.4f}"
-                      f"   (delta {fp_ - ex:+.4f})")
+        for tier in ("1_DESCRIPTIVE", "2_OUT_OF_SAMPLE", "3_INDEPENDENT_COUPLING",
+                     "3x_CROSS_DIRECTION"):
+            rows = [r for r in a5 if r["tier"] == tier and r["direction"] == "plus"]
+            if not rows:
+                continue
+            print(f"  --- {tier} (forward) ---")
+            for K in args.match_K:
+                rk = [r for r in rows if r["K"] == K]
+                if not rk:
+                    continue
+                fpv = [r["retained"] for r in rk if r["states_from"].startswith("fingerprint")]
+                exv = [r["retained"] for r in rk if r["states_from"] == "expression"]
+                msg = f"    K={K:3d} retained: fingerprint {np.nanmean(fpv):.4f}"
+                if exv:
+                    msg += (f" vs expression {np.nanmean(exv):.4f}  "
+                            f"(delta {np.nanmean(fpv)-np.nanmean(exv):+.4f})")
+                print(msg)
                 state["summary_rows"].append(
-                    {"analysis": "A5", "K": K, "split": split, "direction": "plus",
-                     "retained_fingerprint": float(fp_), "retained_expression": float(ex),
-                     "delta": float(fp_ - ex)})
+                    {"analysis": "A5", "tier": tier, "K": K, "direction": "plus",
+                     "retained_fingerprint": float(np.nanmean(fpv)),
+                     "retained_expression": float(np.nanmean(exv)) if exv else None,
+                     "delta": (float(np.nanmean(fpv) - np.nanmean(exv)) if exv else None)})
+        print("  ONLY tiers 3 and 3x support a predictive claim. Tier 1 is "
+              "descriptive; tier 2 tests assignment transfer on a shared coupling.")
         state["analyses"]["A5"] = "done"
         _flush(state, args.out)
 
@@ -480,29 +644,13 @@ def _twonn(X, rng, max_cells=2000):
     return float(mu.size / np.log(mu).sum())
 
 
-def _hopkins(X, rng, m_frac=0.05, max_cells=2000):
-    """Hopkins statistic: ~0.5 for uniform/no cluster tendency, ->1 clustered."""
-    X = np.asarray(X, float)
-    if len(X) > max_cells:
-        X = X[rng.choice(len(X), max_cells, replace=False)]
-    n, d = X.shape
-    m = max(5, int(m_frac * n))
-    if n <= m + 1:
-        return float("nan")
-    lo, hi = X.min(0), X.max(0)
-    samp = X[rng.choice(n, m, replace=False)]
-    unif = rng.uniform(lo, hi, size=(m, d))
-
-    def _nn(Q, ref, exclude_self):
-        d2 = ((Q[:, None, :] - ref[None, :, :]) ** 2).sum(-1)
-        if exclude_self:
-            d2[d2 <= 0] = np.inf
-        return np.sqrt(d2.min(1))
-
-    w = _nn(samp, X, True)
-    u = _nn(unif, X, False)
-    s = w.sum() + u.sum()
-    return float(u.sum() / s) if s > 0 else float("nan")
+# _hopkins was REMOVED. Its null sampled a rectangular bounding box while
+# fingerprints live on probability simplices, so the null points lay off the
+# simplex and inflated the statistic: 0.77-0.84 on UNCLUSTERED Dirichlet samples
+# against 0.91 for genuinely 2-clustered simplex data. A CLR + covariance-matched
+# Gaussian null fixed the negative control but failed the positive one (two
+# clusters are largely a second-moment feature). See csa_anchors.cluster_tendency
+# for the full record, and use cluster_stability_resampled / bimodality_clr.
 
 
 if __name__ == "__main__":

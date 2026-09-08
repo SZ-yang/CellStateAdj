@@ -50,8 +50,21 @@ def parse_args():
     p.add_argument("--chain", required=True)
     p.add_argument("--day-min", type=float, default=8.25)
     p.add_argument("--day-max", type=float, default=18.0)
+    p.add_argument("--ablation-dir", default=None,
+                   help="an 06_expression_ablation.py output directory. Its "
+                        "summary.json is the ONLY accepted source of membership "
+                        "files, so fit validity travels with every CMI row and no "
+                        "stale file from another configuration can enter.")
     p.add_argument("--memberships", nargs="*", default=[],
-                   help="memberships_*.npz from 06; glob patterns accepted")
+                   help="DEPRECATED: raw globs cannot carry convergence or "
+                        "upper-bound status and admit stale files. Requires "
+                        "--allow-unvalidated-memberships.")
+    p.add_argument("--allow-unvalidated-memberships", action="store_true",
+                   help="permit --memberships globs; every such row is marked "
+                        "validated=False and excluded from primary comparisons")
+    p.add_argument("--print-anchor-system", default=None,
+                   help="which anchor system to print (default: the first "
+                        "requested kmeans resolution)")
     p.add_argument("--anchors", type=int, nargs="+", default=[20, 40, 80])
     p.add_argument("--baseline-K", type=int, nargs="+", default=[4, 6, 8, 12, 16, 20],
                    help="K grid for the expression / fingerprint clustering baselines")
@@ -61,7 +74,9 @@ def parse_args():
     p.add_argument("--train-batch", default="1")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=os.path.join(RESULTS_ROOT, "cmi_compare"))
-    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--overwrite", action="store_true",
+                   help="NOT recommended: prefer a fresh --out. Reusing a directory "
+                        "can leave stale CSV/NPZ beside new ones.")
     p.add_argument("--verbose", type=int, default=1)
     return p.parse_args()
 
@@ -115,17 +130,32 @@ def _score_candidate(name, M_list, Fp, Fm, splits, tau, extra=None):
 
 def main():
     args = parse_args()
-    os.makedirs(args.out, exist_ok=True)
-    if os.listdir(args.out) and not args.overwrite:
-        raise SystemExit(f"{args.out} is not empty; pass --overwrite")
 
     data, Z, obs = load_serum(args.h5ad, day_min=args.day_min, day_max=args.day_max,
                               seed=args.seed, verbose=args.verbose)
     T = data.T
     chain = ReferenceChain.load(args.chain)
-    if chain.n_cells != data.n_cells:
-        raise SystemExit(f"chain does not match the loaded cells")
-    print(f"[CMI] chain eps={chain.epsilon:g}  T={T}  K grid {args.baseline_K}")
+    identity = ca.validate_chain_identity(chain, data, Z, chain_path=args.chain)
+    ca.check_identity_args(identity, h5ad=args.h5ad, day_min=args.day_min,
+                           day_max=args.day_max, stride=1, n_per_timepoint=None,
+                           seed=args.seed)
+    print(f"[CMI] chain identity verified against the loaded data "
+          f"(cell ids + order, tau, representation hash, feasibility)")
+    import hashlib
+    key = hashlib.sha1(json.dumps({
+        "chain": os.path.abspath(args.chain), "anchors": sorted(args.anchors),
+        "baseline_K": sorted(args.baseline_K),
+        "ablation_dir": os.path.abspath(args.ablation_dir) if args.ablation_dir else None,
+        "annotation": args.annotation_anchors, "train_batch": args.train_batch,
+    }, sort_keys=True).encode()).hexdigest()[:10]
+    args.out = os.path.join(args.out, f"cfg_{key}")
+    os.makedirs(args.out, exist_ok=True)
+    if os.listdir(args.out) and not args.overwrite:
+        raise SystemExit(
+            f"{args.out} already contains files -- the same comparison already ran. "
+            f"Use a fresh --out or --overwrite.")
+    print(f"[CMI] chain eps={chain.epsilon:g}  T={T}  K grid {args.baseline_K}  "
+          f"-> cfg_{key}")
 
     tr_idx, te_idx = ca.batch_split(data, args.train_batch)
     splits = [{"train": tr_idx[t], "heldout": te_idx[t], "all": np.arange(data.n_cells[t])}
@@ -146,6 +176,53 @@ def main():
         print(f"[CMI] annotation anchor system '{args.annotation_anchors}' "
               f"({len(cats)} categories) -- reported separately; it may be far too "
               f"coarse to expose transition heterogeneity")
+
+    # ---- membership sources, with fit validity attached ------------------
+    membership_sources = []
+    if args.ablation_dir:
+        sp = os.path.join(args.ablation_dir, "summary.json")
+        if not os.path.exists(sp):
+            raise SystemExit(f"no summary.json in {args.ablation_dir}")
+        abl = json.load(open(sp))
+        saved = abl.get("saved_memberships", {})
+        if not saved:
+            raise SystemExit(
+                f"{sp} records no saved_memberships. Either the ablation has not "
+                f"produced any fits yet, or it predates the metadata fix.")
+        if abl.get("chain") and os.path.abspath(abl["chain"]) != os.path.abspath(args.chain):
+            raise SystemExit(
+                f"the ablation used chain {abl['chain']} but this job was given "
+                f"{os.path.abspath(args.chain)} -- refusing to score memberships "
+                f"against a different coupling.")
+        for tag, meta in saved.items():
+            fpth = os.path.join(args.ablation_dir,
+                                meta.get("file", f"memberships_{tag}.npz"))
+            if not os.path.exists(fpth):
+                print(f"  missing {os.path.basename(fpth)} (recorded but absent)")
+                continue
+            membership_sources.append((fpth, {**meta, "validated": True}))
+        # the variant lambda_pm=0 baselines are legitimate candidates too
+        for v, vb in abl.get("variant_baselines", {}).items():
+            fpth = os.path.join(args.ablation_dir, f"memberships_{v}_lpm0_baseline.npz")
+            if os.path.exists(fpth):
+                membership_sources.append((fpth, {
+                    **vb, "validated": True, "variant": v, "lambda_pm": 0.0,
+                    "direction": "baseline",
+                    "beats_upper_bound": True}))   # it IS the bound
+        print(f"[CMI] {len(membership_sources)} membership file(s) from "
+              f"{args.ablation_dir}, each with fit validity attached")
+    if args.memberships:
+        if not args.allow_unvalidated_memberships:
+            raise SystemExit(
+                "--memberships uses raw globs, which cannot carry convergence or "
+                "upper-bound status and admit stale files from earlier "
+                "configurations. Use --ablation-dir, or pass "
+                "--allow-unvalidated-memberships to accept diagnostic-only rows.")
+        for pat in args.memberships:
+            for fpth in sorted(glob.glob(pat)):
+                membership_sources.append((fpth, {"validated": False}))
+        print(f"[CMI] WARNING: {len(args.memberships)} unvalidated glob(s) accepted; "
+              f"those rows are excluded from primary comparisons")
 
     from sklearn.cluster import KMeans
     for asys, (Fp, Fm) in anchor_systems.items():
@@ -173,23 +250,50 @@ def main():
                                                 "family": src, "requested_K": K})
 
         # ---- learned memberships from Workstream B --------------------------
-        paths = [p for pat in args.memberships for p in sorted(glob.glob(pat))]
-        for path in paths:
+        for path, meta in membership_sources:
             z = np.load(path)
-            keys = [k for k in z.files if k.startswith("M_")]
+            keys = sorted(k for k in z.files if k.startswith("M_"))
             if len(keys) != T:
-                print(f"  skipping {os.path.basename(path)}: has {len(keys)} "
-                      f"timepoints, data has {T}")
+                print(f"  SKIP {os.path.basename(path)}: {len(keys)} timepoints, "
+                      f"data has {T}")
                 continue
             M_list = [z[f"M_{t}"] for t in range(T)]
-            if M_list[0].shape[0] != data.n_cells[0]:
-                print(f"  skipping {os.path.basename(path)}: cell count mismatch")
+            # validate EVERY timepoint, not only the first
+            bad = [(t, M_list[t].shape, data.n_cells[t]) for t in range(T)
+                   if M_list[t].shape[0] != data.n_cells[t]]
+            if bad:
+                print(f"  SKIP {os.path.basename(path)}: shape mismatch at "
+                      f"{bad[:3]}{' ...' if len(bad) > 3 else ''}")
+                continue
+            Ks = {M.shape[1] for M in M_list}
+            if len(Ks) != 1:
+                print(f"  SKIP {os.path.basename(path)}: inconsistent K across "
+                      f"timepoints {sorted(Ks)}")
                 continue
             name = os.path.basename(path).replace("memberships_", "").replace(".npz", "")
-            rows += _score_candidate(f"learned_{name}", M_list, Fp, Fm, splits,
-                                     data.tau,
-                                     extra={"anchor_system": asys, "family": "learned"})
-            print(f"  scored {name}")
+            eligible = bool(meta.get("validated")
+                            and meta.get("strict_converged")
+                            and meta.get("beats_upper_bound"))
+            rows += _score_candidate(
+                f"learned_{name}", M_list, Fp, Fm, splits, data.tau,
+                extra={"anchor_system": asys, "family": "learned",
+                       "validated": bool(meta.get("validated")),
+                       "variant": meta.get("variant"),
+                       "lambda_x": meta.get("lambda_x"),
+                       "lambda_pm": meta.get("lambda_pm"),
+                       "direction_path": meta.get("direction"),
+                       "fit_status": meta.get("status"),
+                       "converged": meta.get("converged"),
+                       "strict_converged": meta.get("strict_converged"),
+                       "objective": meta.get("objective"),
+                       "upper_bound": meta.get("upper_bound"),
+                       "beats_upper_bound": meta.get("beats_upper_bound"),
+                       "grad_norm": meta.get("grad_norm"),
+                       "kkt_residual": meta.get("kkt_residual"),
+                       "primary_eligible": eligible})
+            print(f"  scored {name}  "
+                  f"[{'PRIMARY' if eligible else 'diagnostic only'}]"
+                  f"{'' if meta.get('validated') else '  (unvalidated glob)'}")
 
     # ---- write ----------------------------------------------------------
     jdump({"chain": os.path.abspath(args.chain), "epsilon": float(chain.epsilon),
@@ -202,8 +306,17 @@ def main():
 
         # the complexity-sufficiency curve: aggregate over timepoints, keep splits
         # and directions separate, and never average a NaN retained into a number
+        if "primary_eligible" not in df.columns:
+            df["primary_eligible"] = True
+        df["primary_eligible"] = (df["primary_eligible"]
+                                  .infer_objects(copy=False).fillna(True).astype(bool))
+        # baselines are always primary; learned fits must pass the audit
+        df.loc[df.family != "learned", "primary_eligible"] = True
+        df[~df.primary_eligible].to_csv(
+            os.path.join(args.out, "diagnostic_excluded.csv"), index=False)
         grp = (df.groupby(["anchor_system", "candidate", "family", "direction", "split"])
                  .agg(K=("K", "max"), k_eff=("k_eff", "mean"),
+                      primary_eligible=("primary_eligible", "min"),
                       rate=("rate_i_cell_state", "mean"),
                       min_state_mass=("min_state_mass", "min"),
                       cmi=("cmi", "mean"), i_cell_anchor=("i_cell_anchor", "mean"),
@@ -214,13 +327,23 @@ def main():
         grp.to_csv(os.path.join(args.out, "summary.csv"), index=False)
         jdump(grp.to_dict(orient="records"), os.path.join(args.out, "summary.json"))
 
-        print("\n[CMI] forward, held-out, kmeans40 anchors -- "
-              "complexity vs sufficiency:")
+        show = args.print_anchor_system or f"kmeans{sorted(args.anchors)[0]}"
+        if show not in set(grp.anchor_system):
+            show = sorted(set(grp.anchor_system))[0]
+        print(f"\n[CMI] forward, held-out, {show} anchors -- "
+              f"complexity vs sufficiency (PRIMARY rows only):")
         sel = grp[(grp.direction == "plus") & (grp.split == "heldout")
-                  & (grp.anchor_system == "kmeans40")].sort_values(["family", "rate"])
+                  & (grp.anchor_system == show)
+                  & (grp.primary_eligible)].sort_values(["family", "rate"])
         cols = ["candidate", "K", "k_eff", "rate", "min_state_mass", "cmi",
                 "i_cell_anchor", "retained", "n_retained_nan"]
-        print(sel[cols].to_string(index=False, float_format=lambda v: f"{v:.4f}"))
+        print(sel[cols].to_string(index=False, float_format=lambda v: f"{v:.4f}")
+              if len(sel) else "  (no primary-eligible rows)")
+        n_excl = int((~df.primary_eligible).sum())
+        if n_excl:
+            print(f"\n[CMI] {n_excl} row(s) excluded from primary comparison "
+                  f"(not strictly converged, or failed the upper-bound audit, or "
+                  f"unvalidated) -> diagnostic_excluded.csv")
         print("\n[CMI] Compare rows only at MATCHED rate / k_eff. A lower CMI at a "
               "higher rate is not an improvement.")
         if sel["n_retained_nan"].sum():
