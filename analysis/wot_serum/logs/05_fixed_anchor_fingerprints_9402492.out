@@ -1,0 +1,81 @@
+host=s16.hpcc.dartmouth.edu job=9402492 cpus=24 started=2026-09-11T14:17:24-04:00
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_only_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+[A] Stage-0 chain chain_eps0.02.npz (eps=0.02) -- identity verified: 22 timepoints, cell ids and order, tau, representation hash, feasibility
+[out] config hash 7beeb3d4f8 -> /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/fixed_anchor/cfg_7beeb3d4f8
+[A] anchors learned on batch 1 (11000 cells), frozen, then applied to all
+
+[A1] cell-level fingerprint informativeness
+  nA= 20 plus : I(cell;anchor) mean 2.0369 min 1.3444 max 2.4370 (nats, over 21 timepoints)
+  nA= 20 minus: I(cell;anchor) mean 2.0318 min 1.3711 max 2.4201 (nats, over 21 timepoints)
+  nA= 40 plus : I(cell;anchor) mean 2.3918 min 1.4785 max 2.8856 (nats, over 21 timepoints)
+  nA= 40 minus: I(cell;anchor) mean 2.3844 min 1.4933 max 2.8627 (nats, over 21 timepoints)
+  nA= 80 plus : I(cell;anchor) mean 2.7110 min 1.6296 max 3.2899 (nats, over 21 timepoints)
+  nA= 80 minus: I(cell;anchor) mean 2.6994 min 1.6291 max 3.2789 (nats, over 21 timepoints)
+
+[A2] reproducibility in FROZEN anchor coordinates
+  9 perturbed chains built ONCE and reused across 3 anchor resolutions; 0 infeasible
+  nA=20: 378 interval comparisons
+  nA=40: 378 interval comparisons
+  nA=80: 378 interval comparisons
+    batch_1|nA20|minus                 JS mean 0.0733 worst-interval 0.1499
+    batch_1|nA20|plus                  JS mean 0.0737 worst-interval 0.1465
+    batch_1|nA40|minus                 JS mean 0.0973 worst-interval 0.1845
+    batch_1|nA40|plus                  JS mean 0.0963 worst-interval 0.1844
+    batch_1|nA80|minus                 JS mean 0.1178 worst-interval 0.2133
+    batch_1|nA80|plus                  JS mean 0.1200 worst-interval 0.2178
+    batch_2|nA20|minus                 JS mean 0.0728 worst-interval 0.1773
+    batch_2|nA20|plus                  JS mean 0.0717 worst-interval 0.1689
+    batch_2|nA40|minus                 JS mean 0.0973 worst-interval 0.2155
+    batch_2|nA40|plus                  JS mean 0.0953 worst-interval 0.2074
+    batch_2|nA80|minus                 JS mean 0.1211 worst-interval 0.2533
+    batch_2|nA80|plus                  JS mean 0.1204 worst-interval 0.2412
+
+[A3] fingerprint structure vs expression geometry
+     (the old global-I permutation statistic was removed: it responded to fingerprint diversity, not to expression correspondence)
+  nA= 20: JS(neighbour)/JS(random) mean 0.304  | residual fraction after a cross-fitted expression predictor 0.243
+  nA= 40: JS(neighbour)/JS(random) mean 0.386  | residual fraction after a cross-fitted expression predictor 0.295
+  nA= 80: JS(neighbour)/JS(random) mean 0.452  | residual fraction after a cross-fitted expression predictor 0.345
+     ratio ~1 and residual ~1 -> no expression correspondence; both <<1 -> the fingerprint is largely an expression readout
+
+[A4] fingerprint-space geometry
+  intrinsic dim (TwoNN) mean 3.77
+  bimodality of leading CLR PC mean 0.669 (>0.555 suggests bimodal; controls 0.32 unclustered / 0.76 clustered)
+  partition reproducibility K=4: mean ARI 0.905 (controls ~0.15-0.21 unclustered / 1.00 for two clear clusters)
+  partition reproducibility K=8: mean ARI 0.798 (controls ~0.15-0.21 unclustered / 1.00 for two clear clusters)
+
+[A5] predictive comparison -- three explicitly separated tiers
+  batch 1: independent coupling built (feasible=True, 11000 cells)
+  batch 2: independent coupling built (feasible=True, 11000 cells)
+  --- 1_DESCRIPTIVE (forward) ---
+    K=  4 retained: fingerprint 0.2945 vs expression 0.3582  (delta -0.0637)
+    K=  8 retained: fingerprint 0.4340 vs expression 0.4940  (delta -0.0601)
+    K= 12 retained: fingerprint 0.5241 vs expression 0.5582  (delta -0.0341)
+    K= 20 retained: fingerprint 0.6190 vs expression 0.6297  (delta -0.0107)
+  --- 2_OUT_OF_SAMPLE (forward) ---
+    K=  4 retained: fingerprint 0.2869 vs expression 0.3604  (delta -0.0734)
+    K=  8 retained: fingerprint 0.4211 vs expression 0.4922  (delta -0.0712)
+    K= 12 retained: fingerprint 0.5060 vs expression 0.5590  (delta -0.0530)
+    K= 20 retained: fingerprint 0.5913 vs expression 0.6279  (delta -0.0367)
+  --- 3_TRANSFER_DESCRIPTIVE (forward) ---
+    K=  4 retained: fingerprint 0.2871 vs expression 0.3545  (delta -0.0674)
+    K=  8 retained: fingerprint 0.4281 vs expression 0.4877  (delta -0.0596)
+    K= 12 retained: fingerprint 0.4945 vs expression 0.5519  (delta -0.0574)
+    K= 20 retained: fingerprint 0.5957 vs expression 0.6187  (delta -0.0230)
+  --- 3x_CROSS_VIEW_FULL (forward) ---
+    K=  4 retained: fingerprint 0.2350
+    K=  8 retained: fingerprint 0.3560
+    K= 12 retained: fingerprint 0.4154
+    K= 20 retained: fingerprint 0.4979
+  --- 4_INDEPENDENT_CROSS (forward) ---
+    K=  4 retained: fingerprint 0.2250 vs expression 0.3506  (delta -0.1256)
+    K=  8 retained: fingerprint 0.3240 vs expression 0.4844  (delta -0.1604)
+    K= 12 retained: fingerprint 0.3927 vs expression 0.5494  (delta -0.1567)
+    K= 20 retained: fingerprint 0.4679 vs expression 0.6163  (delta -0.1484)
+  ONLY tier 4 supports a predictive claim (independent evaluation coupling AND a target variable absent from the features).
+  Tier 1 descriptive; tier 2 assignment transfer on a shared coupling; tier 3 cross-batch transfer with the target still in the features; tier 3x cross-view association on the full coupling.
+
+[A] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/fixed_anchor/cfg_7beeb3d4f8
+[A] Reminder: low within-state dispersion is NOT a good result if I(cell;anchor) is itself near zero -- check A1 before reading A5.

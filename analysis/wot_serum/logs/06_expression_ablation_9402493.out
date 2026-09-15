@@ -1,0 +1,156 @@
+host=s17.hpcc.dartmouth.edu job=9402493 cpus=24 started=2026-09-11T14:17:24-04:00
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_only_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+[B] chain identity verified against the loaded data (cell ids + order, tau, representation hash, feasibility)
+[B] chain chain_eps0.02.npz eps=0.02 feasible=True  K=8  d=30  T=22
+[out] config hash 94ed13aa80 -> /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/expr_ablation/cfg_94ed13aa80
+
+[B] fitting the lambda_pm=0 SSE baseline (defines sigma^2 and the feasible upper bound for every variant)
+[B] baseline: status=converged n_iter=857 L_expr_SSE=100.9931 (3066s)
+
+[B] sigma^2 = 4.5906 (from SSE/(d*T) at K=8; MLE at lambda_pm=0 under the SSE objective)
+[B] sigma^2 is NOT universally transferable: it depends on this representation, K=8, this preprocessing and this baseline fit.
+[B]   variant sse       -> lambda_x = 1.0000
+[B]   variant gaussian  -> lambda_x = 3.2675  [Gaussian constant 1109.42 nats, argmin-irrelevant]
+[B]   variant none      -> lambda_x = 0.0000
+[B]   sigma^2 sensitivity: sigma2_x0.5 -> lambda_x 6.535, sigma2_x2 -> lambda_x 1.634
+[B]   *** sse baseline is NOT strictly converged: stationarity NOT ASSESSABLE: 712 membership coordinate(s) underflowed below the recovery floor, so dL/dM cannot be recovered from dL/dU there (saturated assignment); simplex KKT residual 1.819e-01 > 0.0001 -- its ARI comparisons are weak ***
+  sse       lpm=0     forward warm: converged  L= 157.6425 (bound  157.6425) |g|=1.17e-04 ARI0=1.000 min_g=1.0e-02 (0.0m)
+  sse       lpm=0     forward cold: converged  L= 158.1738 (bound  157.6425) |g|=1.42e-04 ARI0=0.814 min_g=1.4e-02 (9.4m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=0     forward cold: converged  L= 157.3280 (bound  157.6425) |g|=7.44e-05 ARI0=0.852 min_g=1.0e-02 (12.3m)
+  sse       lpm=0     forward cold: converged  L= 158.6625 (bound  157.6425) |g|=1.52e-04 ARI0=0.824 min_g=1.5e-02 (11.3m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=0.25  forward warm: converged  L= 161.0782 (bound  161.5316) |g|=5.40e-03 ARI0=0.852 min_g=1.0e-02 (0.1m)
+  sse       lpm=0.25  forward cold: converged  L= 161.4815 (bound  161.5316) |g|=1.17e-04 ARI0=0.810 min_g=1.5e-02 (28.2m)
+  sse       lpm=0.25  forward cold: converged  L= 160.8249 (bound  161.5316) |g|=7.70e-05 ARI0=0.840 min_g=1.0e-02 (22.8m)
+  sse       lpm=0.25  forward cold: converged  L= 162.2405 (bound  161.5316) |g|=1.62e-04 ARI0=0.823 min_g=1.5e-02 (22.2m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=1     forward warm: converged  L= 171.2536 (bound  173.1987) |g|=1.27e-04 ARI0=0.829 min_g=1.0e-02 (1.8m)
+  sse       lpm=1     forward cold: converged  L= 172.5923 (bound  173.1987) |g|=1.78e-04 ARI0=0.792 min_g=1.5e-02 (16.6m)
+  sse       lpm=1     forward cold: converged  L= 171.5717 (bound  173.1987) |g|=1.25e-04 ARI0=0.814 min_g=1.0e-02 (20.2m)
+  sse       lpm=1     forward cold: converged  L= 173.5572 (bound  173.1987) |g|=1.08e-04 ARI0=0.797 min_g=1.6e-02 (21.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=2     forward warm: converged  L= 183.7744 (bound  188.7549) |g|=8.52e-05 ARI0=0.807 min_g=1.0e-02 (17.8m)
+  sse       lpm=2     forward cold: converged  L= 185.8430 (bound  188.7549) |g|=1.20e-04 ARI0=0.771 min_g=1.4e-02 (16.0m)
+  sse       lpm=2     forward cold: converged  L= 184.6169 (bound  188.7549) |g|=1.25e-03 ARI0=0.788 min_g=1.0e-02 (15.0m)
+  sse       lpm=2     forward cold: converged  L= 187.5921 (bound  188.7549) |g|=8.10e-05 ARI0=0.767 min_g=1.4e-02 (14.2m)
+  sse       lpm=5     forward warm: converged  L= 218.2871 (bound  235.4236) |g|=1.51e-04 ARI0=0.773 min_g=9.2e-03 (37.9m)
+  sse       lpm=5     forward cold: converged  L= 248.5346 (bound  235.4236) |g|=9.96e-05 ARI0=0.620 min_g=2.0e-03 (6.3m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=5     forward cold: converged  L= 258.6422 (bound  235.4236) |g|=1.95e-04 ARI0=0.620 min_g=1.0e-02 (1.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=5     forward cold: converged  L= 252.5809 (bound  235.4236) |g|=7.68e-05 ARI0=0.608 min_g=2.0e-02 (7.3m)  <-- FAILED to beat the lambda_pm=0 bound
+[B] reverse path for sse starts from the fitted forward endpoint (genuine hysteresis check)
+  sse       lpm=5     reverse warm: converged  L= 218.2871 (bound  235.4236) |g|=1.51e-04 ARI0=0.773 min_g=9.2e-03 (0.0m)
+  sse       lpm=5     reverse cold: converged  L= 248.3989 (bound  235.4236) |g|=1.77e-04 ARI0=0.619 min_g=2.1e-03 (6.2m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=5     reverse cold: converged  L= 258.6422 (bound  235.4236) |g|=3.78e-05 ARI0=0.620 min_g=1.0e-02 (1.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=5     reverse cold: converged  L= 253.1895 (bound  235.4236) |g|=1.01e-04 ARI0=0.608 min_g=2.0e-02 (5.8m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=2     reverse warm: converged  L= 182.6517 (bound  188.7549) |g|=1.20e-04 ARI0=0.779 min_g=9.2e-03 (3.4m)
+  sse       lpm=2     reverse cold: converged  L= 185.6697 (bound  188.7549) |g|=1.60e-04 ARI0=0.770 min_g=1.4e-02 (21.7m)
+  sse       lpm=2     reverse cold: converged  L= 184.4573 (bound  188.7549) |g|=8.76e-05 ARI0=0.786 min_g=1.0e-02 (16.3m)
+  sse       lpm=2     reverse cold: converged  L= 187.5487 (bound  188.7549) |g|=1.17e-04 ARI0=0.766 min_g=1.4e-02 (11.2m)
+  sse       lpm=1     reverse warm: converged  L= 170.6064 (bound  173.1987) |g|=9.55e-05 ARI0=0.784 min_g=9.1e-03 (1.6m)
+  sse       lpm=1     reverse cold: converged  L= 172.5850 (bound  173.1987) |g|=1.16e-04 ARI0=0.791 min_g=1.5e-02 (17.8m)
+  sse       lpm=1     reverse cold: converged  L= 171.5396 (bound  173.1987) |g|=9.23e-05 ARI0=0.813 min_g=1.0e-02 (21.0m)
+  sse       lpm=1     reverse cold: converged  L= 173.6286 (bound  173.1987) |g|=1.85e-04 ARI0=0.797 min_g=1.6e-02 (15.4m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=0.25  reverse warm: converged  L= 161.4414 (bound  161.5316) |g|=1.14e-04 ARI0=0.792 min_g=9.0e-03 (1.2m)
+  sse       lpm=0.25  reverse cold: converged  L= 161.4176 (bound  161.5316) |g|=6.32e-05 ARI0=0.809 min_g=1.5e-02 (27.0m)
+  sse       lpm=0.25  reverse cold: converged  L= 160.7995 (bound  161.5316) |g|=1.24e-04 ARI0=0.839 min_g=1.0e-02 (24.3m)
+  sse       lpm=0.25  reverse cold: converged  L= 162.1984 (bound  161.5316) |g|=2.09e-04 ARI0=0.823 min_g=1.5e-02 (24.7m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=0     reverse warm: converged  L= 157.2673 (bound  157.6425) |g|=4.38e-03 ARI0=0.839 min_g=1.0e-02 (0.0m)
+  sse       lpm=0     reverse cold: converged  L= 158.1765 (bound  157.6425) |g|=8.47e-04 ARI0=0.814 min_g=1.4e-02 (10.6m)  <-- FAILED to beat the lambda_pm=0 bound
+  sse       lpm=0     reverse cold: converged  L= 157.4102 (bound  157.6425) |g|=7.40e-05 ARI0=0.852 min_g=1.0e-02 (9.7m)
+  sse       lpm=0     reverse cold: converged  L= 158.6089 (bound  157.6425) |g|=8.22e-05 ARI0=0.826 min_g=1.5e-02 (13.7m)  <-- FAILED to beat the lambda_pm=0 bound
+
+[B] fitting the lambda_pm=0 baseline for variant 'gaussian' (lambda_x=3.2675)
+[B]   gaussian baseline: status=converged n_iter=95 L=386.7295
+[B]   *** gaussian baseline is NOT strictly converged: stationarity NOT ASSESSABLE: 88051 membership coordinate(s) underflowed below the recovery floor, so dL/dM cannot be recovered from dL/dU there (saturated assignment); simplex KKT residual 1.734e-01 > 0.0001 -- its ARI comparisons are weak ***
+  gaussian  lpm=0     forward warm: converged  L= 386.7295 (bound  386.7295) |g|=1.77e-04 ARI0=1.000 min_g=1.0e-02 (0.0m)
+  gaussian  lpm=0     forward cold: converged  L= 388.1103 (bound  386.7295) |g|=1.75e-04 ARI0=0.826 min_g=1.4e-02 (0.8m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0     forward cold: converged  L= 386.4502 (bound  386.7295) |g|=1.77e-04 ARI0=0.857 min_g=1.0e-02 (1.3m)
+  gaussian  lpm=0     forward cold: converged  L= 388.1635 (bound  386.7295) |g|=1.21e-04 ARI0=0.839 min_g=1.4e-02 (1.3m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0.25  forward warm: converged  L= 390.6962 (bound  391.0604) |g|=1.92e-03 ARI0=0.857 min_g=1.0e-02 (0.0m)
+  gaussian  lpm=0.25  forward cold: converged  L= 392.1476 (bound  391.0604) |g|=2.24e-04 ARI0=0.823 min_g=1.4e-02 (2.6m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0.25  forward cold: converged  L= 390.6342 (bound  391.0604) |g|=2.90e-04 ARI0=0.856 min_g=1.0e-02 (2.7m)
+  gaussian  lpm=0.25  forward cold: converged  L= 392.4366 (bound  391.0604) |g|=6.13e-05 ARI0=0.836 min_g=1.4e-02 (2.4m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=1     forward warm: converged  L= 403.2906 (bound  404.0531) |g|=2.62e-04 ARI0=0.855 min_g=1.0e-02 (0.7m)
+  gaussian  lpm=1     forward cold: converged  L= 404.6099 (bound  404.0531) |g|=1.80e-04 ARI0=0.819 min_g=1.4e-02 (2.7m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=1     forward cold: converged  L= 402.9090 (bound  404.0531) |g|=1.52e-04 ARI0=0.852 min_g=1.0e-02 (2.8m)
+  gaussian  lpm=1     forward cold: converged  L= 405.3367 (bound  404.0531) |g|=1.24e-04 ARI0=0.828 min_g=1.4e-02 (3.2m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=2     forward warm: converged  L= 419.3039 (bound  421.3766) |g|=1.20e-04 ARI0=0.852 min_g=1.0e-02 (0.4m)
+  gaussian  lpm=2     forward cold: converged  L= 419.8054 (bound  421.3766) |g|=1.26e-04 ARI0=0.804 min_g=1.4e-02 (8.7m)
+  gaussian  lpm=2     forward cold: converged  L= 417.8486 (bound  421.3766) |g|=2.16e-04 ARI0=0.840 min_g=1.0e-02 (7.4m)
+  gaussian  lpm=2     forward cold: converged  L= 421.8232 (bound  421.3766) |g|=2.00e-04 ARI0=0.821 min_g=1.4e-02 (5.7m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=5     forward warm: converged  L= 464.2834 (bound  473.3473) |g|=3.67e-04 ARI0=0.838 min_g=1.0e-02 (0.5m)
+  gaussian  lpm=5     forward cold: converged  L= 462.7669 (bound  473.3473) |g|=2.61e-04 ARI0=0.781 min_g=1.5e-02 (4.9m)
+  gaussian  lpm=5     forward cold: converged  L= 458.9440 (bound  473.3473) |g|=2.95e-04 ARI0=0.801 min_g=1.0e-02 (10.3m)
+  gaussian  lpm=5     forward cold: converged  L= 466.3199 (bound  473.3473) |g|=3.76e-04 ARI0=0.786 min_g=1.5e-02 (4.0m)
+[B] reverse path for gaussian starts from the fitted forward endpoint (genuine hysteresis check)
+  gaussian  lpm=5     reverse warm: converged  L= 458.9441 (bound  473.3473) |g|=2.95e-04 ARI0=0.801 min_g=1.0e-02 (0.0m)
+  gaussian  lpm=5     reverse cold: converged  L= 462.8632 (bound  473.3473) |g|=1.81e-04 ARI0=0.782 min_g=1.5e-02 (4.5m)
+  gaussian  lpm=5     reverse cold: converged  L= 458.5893 (bound  473.3473) |g|=2.26e-04 ARI0=0.798 min_g=1.0e-02 (14.6m)
+  gaussian  lpm=5     reverse cold: converged  L= 466.0541 (bound  473.3473) |g|=1.51e-03 ARI0=0.784 min_g=1.5e-02 (7.1m)
+  gaussian  lpm=2     reverse warm: converged  L= 417.2662 (bound  421.3766) |g|=9.95e-05 ARI0=0.800 min_g=1.0e-02 (1.1m)
+  gaussian  lpm=2     reverse cold: converged  L= 420.1548 (bound  421.3766) |g|=1.20e-04 ARI0=0.809 min_g=1.4e-02 (5.7m)
+  gaussian  lpm=2     reverse cold: converged  L= 417.9102 (bound  421.3766) |g|=1.77e-04 ARI0=0.841 min_g=1.0e-02 (5.9m)
+  gaussian  lpm=2     reverse cold: converged  L= 421.8184 (bound  421.3766) |g|=2.39e-04 ARI0=0.821 min_g=1.4e-02 (5.8m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=1     reverse warm: converged  L= 403.4108 (bound  404.0531) |g|=1.50e-04 ARI0=0.801 min_g=1.0e-02 (0.7m)
+  gaussian  lpm=1     reverse cold: converged  L= 404.5858 (bound  404.0531) |g|=2.04e-04 ARI0=0.819 min_g=1.4e-02 (3.9m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=1     reverse cold: converged  L= 402.9076 (bound  404.0531) |g|=1.22e-04 ARI0=0.852 min_g=1.0e-02 (2.7m)
+  gaussian  lpm=1     reverse cold: converged  L= 405.3423 (bound  404.0531) |g|=6.33e-05 ARI0=0.828 min_g=1.4e-02 (3.3m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0.25  reverse warm: converged  L= 390.5972 (bound  391.0604) |g|=4.34e-03 ARI0=0.852 min_g=1.0e-02 (0.1m)
+  gaussian  lpm=0.25  reverse cold: converged  L= 392.1498 (bound  391.0604) |g|=1.05e-04 ARI0=0.824 min_g=1.4e-02 (2.4m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0.25  reverse cold: converged  L= 390.6350 (bound  391.0604) |g|=2.66e-04 ARI0=0.856 min_g=1.0e-02 (2.0m)
+  gaussian  lpm=0.25  reverse cold: converged  L= 392.4349 (bound  391.0604) |g|=6.04e-05 ARI0=0.836 min_g=1.4e-02 (2.2m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0     reverse warm: converged  L= 386.4937 (bound  386.7295) |g|=5.78e-03 ARI0=0.852 min_g=1.0e-02 (0.0m)
+  gaussian  lpm=0     reverse cold: converged  L= 388.1103 (bound  386.7295) |g|=2.05e-04 ARI0=0.826 min_g=1.4e-02 (0.8m)  <-- FAILED to beat the lambda_pm=0 bound
+  gaussian  lpm=0     reverse cold: converged  L= 386.4459 (bound  386.7295) |g|=2.17e-04 ARI0=0.856 min_g=1.0e-02 (1.6m)
+  gaussian  lpm=0     reverse cold: converged  L= 388.1640 (bound  386.7295) |g|=1.39e-04 ARI0=0.839 min_g=1.4e-02 (1.1m)  <-- FAILED to beat the lambda_pm=0 bound
+
+[B] fitting the lambda_pm=0 baseline for variant 'none' (lambda_x=0.0000)
+[B]   none baseline: status=converged n_iter=1070 L=53.4121
+[B]   *** none baseline is NOT strictly converged: stationarity NOT ASSESSABLE: 920 membership coordinate(s) underflowed below the recovery floor, so dL/dM cannot be recovered from dL/dU there (saturated assignment); simplex KKT residual 6.682e-02 > 0.0001 -- its ARI comparisons are weak ***
+  none      lpm=0     forward warm: converged  L=  53.4121 (bound   53.4121) |g|=6.67e-05 ARI0=1.000 min_g=1.2e-02 (0.0m)
+  none      lpm=0     forward cold: converged  L=  53.3464 (bound   53.4121) |g|=5.38e-05 ARI0=0.780 min_g=2.6e-02 (18.1m)
+  none      lpm=0     forward cold: converged  L=  53.1440 (bound   53.4121) |g|=4.07e-05 ARI0=0.827 min_g=1.0e-02 (22.5m)
+  none      lpm=0     forward cold: converged  L=  53.6971 (bound   53.4121) |g|=5.66e-05 ARI0=0.802 min_g=2.8e-02 (18.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  forward warm: converged  L=  56.0166 (bound   56.4012) |g|=6.32e-05 ARI0=0.820 min_g=1.1e-02 (3.4m)
+  none      lpm=0.25  forward cold: converged  L=  59.4881 (bound   56.4012) |g|=3.93e-05 ARI0=0.717 min_g=1.5e-02 (24.8m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  forward cold: converged  L=  59.4309 (bound   56.4012) |g|=5.91e-05 ARI0=0.738 min_g=7.1e-03 (27.5m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  forward cold: converged  L=  60.7419 (bound   56.4012) |g|=4.01e-05 ARI0=0.712 min_g=1.8e-02 (15.4m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     forward warm: converged  L=  63.9890 (bound   65.3686) |g|=8.65e-05 ARI0=0.803 min_g=3.1e-02 (21.5m)
+  none      lpm=1     forward cold: converged  L=  77.7120 (bound   65.3686) |g|=2.29e-05 ARI0=0.640 min_g=9.0e-03 (26.2m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     forward cold: max_iter   L=  86.0793 (bound   65.3686) |g|=5.85e-02 ARI0=0.663 min_g=3.1e-02 (37.4m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     forward cold: max_iter   L=  87.2061 (bound   65.3686) |g|=5.57e-02 ARI0=0.657 min_g=3.8e-02 (37.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=2     forward warm: max_iter   L=  73.7555 (bound   77.3251) |g|=4.21e-04 ARI0=0.787 min_g=2.7e-02 (38.1m)
+  none      lpm=2     forward cold: max_iter   L=  77.7219 (bound   77.3251) |g|=1.61e-04 ARI0=0.498 min_g=5.6e-03 (37.5m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=2     forward cold: max_iter   L=  77.7321 (bound   77.3251) |g|=5.14e-04 ARI0=0.499 min_g=2.5e-02 (37.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=2     forward cold: max_iter   L=  78.8469 (bound   77.3251) |g|=5.58e-04 ARI0=0.459 min_g=7.3e-03 (37.7m)  <-- FAILED to beat the lambda_pm=0 bound
+    (no converged run at none lpm=2 forward; saving the best of 4 by objective, flagged NONCONVERGED)
+  none      lpm=5     forward warm: max_iter   L= 102.4932 (bound  113.1947) |g|=3.61e-04 ARI0=0.772 min_g=2.6e-02 (37.9m)
+  none      lpm=5     forward cold: max_iter   L=  82.6456 (bound  113.1947) |g|=5.70e-04 ARI0=-0.002 min_g=1.1e-05 (36.3m)
+  none      lpm=5     forward cold: max_iter   L=  82.5103 (bound  113.1947) |g|=3.32e-04 ARI0=-0.002 min_g=5.2e-07 (36.5m)
+  none      lpm=5     forward cold: max_iter   L=  84.2596 (bound  113.1947) |g|=7.33e-04 ARI0=-0.002 min_g=8.1e-06 (36.8m)
+    (no converged run at none lpm=5 forward; saving the best of 4 by objective, flagged NONCONVERGED)
+[B] reverse path for none starts from the fitted forward endpoint (genuine hysteresis check)
+  none      lpm=5     reverse warm: converged  L=  82.5103 (bound  113.1947) |g|=3.32e-04 ARI0=-0.002 min_g=5.2e-07 (0.0m)
+  none      lpm=5     reverse cold: max_iter   L=  82.5565 (bound  113.1947) |g|=5.41e-04 ARI0=-0.001 min_g=8.1e-06 (36.6m)
+  none      lpm=5     reverse cold: max_iter   L=  82.5236 (bound  113.1947) |g|=1.27e-03 ARI0=-0.002 min_g=5.3e-07 (36.4m)
+  none      lpm=5     reverse cold: max_iter   L=  84.1152 (bound  113.1947) |g|=8.09e-04 ARI0=-0.002 min_g=4.7e-06 (36.6m)
+  none      lpm=2     reverse warm: converged  L=  82.2145 (bound   77.3251) |g|=1.33e-04 ARI0=-0.002 min_g=5.2e-07 (0.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=2     reverse cold: max_iter   L=  77.6350 (bound   77.3251) |g|=2.52e-04 ARI0=0.496 min_g=5.8e-03 (34.9m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=2     reverse cold: max_iter   L=  77.7099 (bound   77.3251) |g|=1.95e-04 ARI0=0.503 min_g=2.6e-02 (31.9m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=2     reverse cold: max_iter   L=  78.6444 (bound   77.3251) |g|=5.27e-04 ARI0=0.455 min_g=1.9e-02 (32.6m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     reverse warm: converged  L=  82.1159 (bound   65.3686) |g|=6.69e-05 ARI0=-0.002 min_g=5.2e-07 (0.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     reverse cold: converged  L=  77.6991 (bound   65.3686) |g|=3.26e-05 ARI0=0.640 min_g=9.0e-03 (26.7m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     reverse cold: max_iter   L=  86.0793 (bound   65.3686) |g|=5.85e-02 ARI0=0.663 min_g=3.1e-02 (38.9m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=1     reverse cold: max_iter   L=  87.2061 (bound   65.3686) |g|=5.57e-02 ARI0=0.657 min_g=3.8e-02 (38.9m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  reverse warm: converged  L=  64.8538 (bound   56.4012) |g|=2.13e-04 ARI0=0.640 min_g=9.0e-03 (0.0m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  reverse cold: converged  L=  59.4223 (bound   56.4012) |g|=5.84e-05 ARI0=0.718 min_g=1.5e-02 (32.5m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  reverse cold: converged  L=  59.4764 (bound   56.4012) |g|=7.11e-05 ARI0=0.738 min_g=8.1e-03 (26.2m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0.25  reverse cold: converged  L=  60.6331 (bound   56.4012) |g|=3.39e-05 ARI0=0.715 min_g=1.8e-02 (29.3m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0     reverse warm: converged  L=  56.0576 (bound   53.4121) |g|=6.93e-05 ARI0=0.719 min_g=1.5e-02 (1.9m)  <-- FAILED to beat the lambda_pm=0 bound
+  none      lpm=0     reverse cold: converged  L=  53.3733 (bound   53.4121) |g|=5.74e-05 ARI0=0.779 min_g=2.5e-02 (15.7m)
+  none      lpm=0     reverse cold: max_iter   L=  53.1442 (bound   53.4121) |g|=1.60e-04 ARI0=0.826 min_g=1.0e-02 (23.9m)
+  none      lpm=0     reverse cold: converged  L=  53.6985 (bound   53.4121) |g|=4.50e-05 ARI0=0.801 min_g=2.8e-02 (17.5m)  <-- FAILED to beat the lambda_pm=0 bound
+
+[B] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/expr_ablation/cfg_94ed13aa80
+[B] 120 runs; 0 errored; 52 failed to beat the lambda_pm=0 upper bound (optimisation failures, not model results)
+[B] Reminder: the three variants are one lambda_x axis, so do NOT compare term shares across them -- compare objective differences within a variant and the held-out CMI columns across them.

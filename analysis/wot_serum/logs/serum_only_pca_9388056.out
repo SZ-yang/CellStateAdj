@@ -1,0 +1,7 @@
+host=s15.hpcc.dartmouth.edu job=9388056 cpus=16 started=2026-09-08T19:20:34-04:00
+[raw] (236285, 19089)
+[serum-only] (165892, 19089)  arms={'shared': 98238, 'serum': 67654}
+[balanced] (38817, 19089)
+[hvg] 2000 genes selected on serum-conditional cells only
+[done] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_only_pca.h5ad  X_model=(38817, 30)
+[done] re-run any stage with --h5ad to get a separate, non-mixable run dir

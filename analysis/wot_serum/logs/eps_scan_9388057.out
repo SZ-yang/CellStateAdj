@@ -1,0 +1,72 @@
+host=s28.hpcc.dartmouth.edu job=9388057 cpus=32 started=2026-09-08T19:22:55-04:00
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_only_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+[scan] native global cost scale = 1459.61 (mode=global, pinned across strides)
+[scan] epsilon grid = [0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+[scan] conditioning scale for float64 is max(C)/eps ~ 708.4; max normalised cost 2.03-12.87, median nearest-neighbour cost 0.040-0.139 over 21 intervals
+[scan] this is a CONDITIONING WARNING, not a feasibility bound -- admissibility is decided by the measured marginal_error / feasible columns, not by this table
+  eps=0.002   max(C)/eps=     6437  21/21 intervals ill-conditioned; nearest-neighbour cost/eps max=    69.6  <-- expect slow convergence
+  eps=0.005   max(C)/eps=     2575  15/21 intervals ill-conditioned; nearest-neighbour cost/eps max=    27.8  <-- expect slow convergence
+  eps=0.01    max(C)/eps=     1287  11/21 intervals ill-conditioned; nearest-neighbour cost/eps max=    13.9  <-- expect slow convergence
+  eps=0.02    max(C)/eps=      644   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     7.0
+  eps=0.05    max(C)/eps=      257   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     2.8
+  eps=0.1     max(C)/eps=      129   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     1.4
+  eps=0.2     max(C)/eps=       64   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     0.7
+  eps=0.5     max(C)/eps=       26   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     0.3
+  eps=1       max(C)/eps=       13   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     0.1
+  eps=2       max(C)/eps=        6   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     0.1
+  eps=5       max(C)/eps=        3   0/21 intervals ill-conditioned; nearest-neighbour cost/eps max=     0.0
+
+[scan] stride=1: T=22 intervals=21 dtau 0.25-0.5 d
+[eps-scan] interval 0 (tau 8.25->8.5, dtau=0.25) n=1000x1000 nnz=537414 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 1 (tau 8.5->8.75, dtau=0.25) n=1000x1000 nnz=510729 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 2 (tau 8.75->9, dtau=0.25) n=1000x1000 nnz=519477 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 3 (tau 9->9.5, dtau=0.5) n=1000x1000 nnz=524777 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 4 (tau 9.5->10, dtau=0.5) n=1000x1000 nnz=502758 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 5 (tau 10->10.5, dtau=0.5) n=1000x1000 nnz=534961 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 6 (tau 10.5->11, dtau=0.5) n=1000x1000 nnz=533179 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 7 (tau 11->11.5, dtau=0.5) n=1000x1000 nnz=536536 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 8 (tau 11.5->12, dtau=0.5) n=1000x1000 nnz=534959 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 9 (tau 12->12.5, dtau=0.5) n=1000x1000 nnz=526124 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 10 (tau 12.5->13, dtau=0.5) n=1000x1000 nnz=538105 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 11 (tau 13->13.5, dtau=0.5) n=1000x1000 nnz=551320 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 12 (tau 13.5->14, dtau=0.5) n=1000x1000 nnz=547182 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 13 (tau 14->14.5, dtau=0.5) n=1000x1000 nnz=540504 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 14 (tau 14.5->15, dtau=0.5) n=1000x1000 nnz=547996 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 15 (tau 15->15.5, dtau=0.5) n=1000x1000 nnz=542591 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 16 (tau 15.5->16, dtau=0.5) n=1000x1000 nnz=538827 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 17 (tau 16->16.5, dtau=0.5) n=1000x1000 nnz=538621 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 18 (tau 16.5->17, dtau=0.5) n=1000x1000 nnz=536344 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 19 (tau 17->17.5, dtau=0.5) n=1000x1000 nnz=532347 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 20 (tau 17.5->18, dtau=0.5) n=1000x1000 nnz=540393 kappa=400 cost_scale=1.46e+03
+[scan] stride=1 done in 398.8 min
+[scan] recommendation: {'window': (0.02, 0.05), 'epsilon_star': 0.02, 'admissible': [0.02, 0.05], 'admissible_window': [0.02, 0.05], 'n_admissible_runs': 1, 'unevaluated': {'stability_resample': {'n_intervals': 21, 'per_epsilon': {'0.002': [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], '0.005': [14]}}, 'stability_cost': {'n_intervals': 21, 'per_epsilon': {'0.002': [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}}}}
+  I_cell_normalized       0.9036  0.8173  0.7070  0.5654  0.3774  0.2682  0.1927  0.1349  0.1147  0.1060  0.1029
+  I_fingerprint_plus      2.9680  2.7903  2.5739  2.2797  1.8118  1.4485  1.1106  0.7691  0.6225  0.5492  0.5153
+  stability_resample      0.4652  0.5174  0.6903  0.8148  0.8563  0.7221  0.5201  0.0497  0.0000  0.0000  0.0000
+  stability_cost          0.9145  0.9671  0.9853  0.9942  0.9986  0.9995  0.9998  0.9999  1.0000  1.0000  1.0000
+  feasible                1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000
+
+[scan] stride=2: T=11 intervals=10 dtau 0.5-1 d
+[eps-scan] interval 0 (tau 8.25->8.75, dtau=0.5) n=1000x1000 nnz=528958 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 1 (tau 8.75->9.5, dtau=0.75) n=1000x1000 nnz=534442 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 2 (tau 9.5->10.5, dtau=1) n=1000x1000 nnz=546208 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 3 (tau 10.5->11.5, dtau=1) n=1000x1000 nnz=539870 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 4 (tau 11.5->12.5, dtau=1) n=1000x1000 nnz=539752 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 5 (tau 12.5->13.5, dtau=1) n=1000x1000 nnz=542172 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 6 (tau 13.5->14.5, dtau=1) n=1000x1000 nnz=553379 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 7 (tau 14.5->15.5, dtau=1) n=1000x1000 nnz=549368 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 8 (tau 15.5->16.5, dtau=1) n=1000x1000 nnz=538363 kappa=400 cost_scale=1.46e+03
+[eps-scan] interval 9 (tau 16.5->17.5, dtau=1) n=1000x1000 nnz=536260 kappa=400 cost_scale=1.46e+03
+[scan] stride=2 done in 124.5 min
+[scan] recommendation: {'window': (0.01, 0.02), 'epsilon_star': 0.02, 'admissible': [0.01, 0.02], 'admissible_window': [0.01, 0.02], 'n_admissible_runs': 1, 'unevaluated': {}}
+  I_cell_normalized       0.8433  0.7029  0.5577  0.4101  0.2577  0.1846  0.1402  0.1126  0.1050  0.1026  0.1019
+  I_fingerprint_plus      2.8283  2.5363  2.2221  1.8561  1.3687  1.0459  0.7937  0.6006  0.5362  0.5099  0.4988
+  stability_resample      0.4812  0.7401  0.8502  0.8843  0.6956  0.5025  0.1836  0.0000  0.0000  0.0000  0.0000
+  stability_cost          0.9338  0.9763  0.9907  0.9967  0.9992  0.9997  0.9999  1.0000  1.0000  1.0000  1.0000
+  feasible                1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000  1.0000
+
+[scan] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/eps_scan_stage0
+[scan] epsilon* (stride 1) = 0.02  window (0.02, 0.05)

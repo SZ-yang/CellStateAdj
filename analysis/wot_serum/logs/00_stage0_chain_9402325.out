@@ -1,0 +1,97 @@
+host=s10.hpcc.dartmouth.edu job=9402325 cpus=16 started=2026-09-11T12:49:11-04:00
+[load] /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_only_pca.h5ad
+[load] days 8.25-18  T=22  cells=22000  d=30  stride=1
+[load] dtau unique: [0.25, 0.5]
+[load] arms retained: {'serum': 22000}
+[stage0] cost scale: global, single scale 1459.61
+[stage0] config hash 18be3a1d48 -> /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/stage0_chain/cfg_18be3a1d48
+
+[stage0] epsilon=0.01 -> chain_eps0.01.npz
+  cost_scale_mode=global scale=1460
+  [interval 0] dtau=0.25 nnz=537414 kappa=400 iters=880 marg_err=9.74e-08
+  [interval 1] dtau=0.25 nnz=510729 kappa=400 iters=4450 marg_err=9.93e-08
+  [interval 2] dtau=0.25 nnz=519477 kappa=400 iters=490 marg_err=9.09e-08
+  [interval 3] dtau=0.5 nnz=524777 kappa=400 iters=520 marg_err=8.82e-08
+  [interval 4] dtau=0.5 nnz=502758 kappa=400 iters=540 marg_err=9.86e-08
+  [interval 5] dtau=0.5 nnz=534961 kappa=400 iters=660 marg_err=8.66e-08
+  [interval 6] dtau=0.5 nnz=533179 kappa=400 iters=1050 marg_err=9.28e-08
+  [interval 7] dtau=0.5 nnz=536536 kappa=400 iters=20000 marg_err=1.02e-07
+  [interval 8] dtau=0.5 nnz=534959 kappa=400 iters=20000 marg_err=6.09e-07
+  [interval 9] dtau=0.5 nnz=526124 kappa=400 iters=6260 marg_err=9.98e-08
+  [interval 10] dtau=0.5 nnz=538105 kappa=400 iters=12310 marg_err=9.99e-08
+  [interval 11] dtau=0.5 nnz=551320 kappa=400 iters=20000 marg_err=5.14e-07
+  [interval 12] dtau=0.5 nnz=547182 kappa=400 iters=20000 marg_err=2.24e-07
+  [interval 13] dtau=0.5 nnz=540504 kappa=400 iters=20000 marg_err=3.33e-07
+  [interval 14] dtau=0.5 nnz=547996 kappa=400 iters=20000 marg_err=2.27e-06
+  [interval 15] dtau=0.5 nnz=542591 kappa=400 iters=20000 marg_err=4.46e-07
+  [interval 16] dtau=0.5 nnz=538827 kappa=400 iters=20000 marg_err=9.47e-07
+  [interval 17] dtau=0.5 nnz=538621 kappa=400 iters=20000 marg_err=8.08e-07
+  [interval 18] dtau=0.5 nnz=536344 kappa=400 iters=20000 marg_err=6.58e-07
+  [interval 19] dtau=0.5 nnz=532347 kappa=400 iters=20000 marg_err=6.41e-07
+  [interval 20] dtau=0.5 nnz=540393 kappa=400 iters=20000 marg_err=8.56e-07
+[stage0]   feasible=True max_marg_err=2.270e-06 nnz 502758-551320 (1792s)
+
+[stage0] epsilon=0.02 -> chain_eps0.02.npz
+  cost_scale_mode=global scale=1460
+  [interval 0] dtau=0.25 nnz=537414 kappa=400 iters=210 marg_err=8.48e-08
+  [interval 1] dtau=0.25 nnz=510729 kappa=400 iters=240 marg_err=9.44e-08
+  [interval 2] dtau=0.25 nnz=519477 kappa=400 iters=240 marg_err=9.86e-08
+  [interval 3] dtau=0.5 nnz=524777 kappa=400 iters=180 marg_err=8.21e-08
+  [interval 4] dtau=0.5 nnz=502758 kappa=400 iters=270 marg_err=8.34e-08
+  [interval 5] dtau=0.5 nnz=534961 kappa=400 iters=320 marg_err=6.93e-08
+  [interval 6] dtau=0.5 nnz=533179 kappa=400 iters=540 marg_err=8.62e-08
+  [interval 7] dtau=0.5 nnz=536536 kappa=400 iters=1650 marg_err=9.85e-08
+  [interval 8] dtau=0.5 nnz=534959 kappa=400 iters=6560 marg_err=9.98e-08
+  [interval 9] dtau=0.5 nnz=526124 kappa=400 iters=1710 marg_err=9.89e-08
+  [interval 10] dtau=0.5 nnz=538105 kappa=400 iters=2160 marg_err=9.96e-08
+  [interval 11] dtau=0.5 nnz=551320 kappa=400 iters=14600 marg_err=9.98e-08
+  [interval 12] dtau=0.5 nnz=547182 kappa=400 iters=18440 marg_err=1.00e-07
+  [interval 13] dtau=0.5 nnz=540504 kappa=400 iters=20000 marg_err=1.01e-07
+  [interval 14] dtau=0.5 nnz=547996 kappa=400 iters=9930 marg_err=9.99e-08
+  [interval 15] dtau=0.5 nnz=542591 kappa=400 iters=18190 marg_err=9.99e-08
+  [interval 16] dtau=0.5 nnz=538827 kappa=400 iters=20000 marg_err=3.91e-07
+  [interval 17] dtau=0.5 nnz=538621 kappa=400 iters=12570 marg_err=9.99e-08
+  [interval 18] dtau=0.5 nnz=536344 kappa=400 iters=20000 marg_err=1.03e-07
+  [interval 19] dtau=0.5 nnz=532347 kappa=400 iters=20000 marg_err=3.14e-07
+  [interval 20] dtau=0.5 nnz=540393 kappa=400 iters=20000 marg_err=3.11e-07
+[stage0]   feasible=True max_marg_err=3.911e-07 nnz 502758-551320 (1256s)
+
+[stage0] epsilon=0.05 -> chain_eps0.05.npz
+  cost_scale_mode=global scale=1460
+  [interval 0] dtau=0.25 nnz=537414 kappa=400 iters=80 marg_err=9.31e-08
+  [interval 1] dtau=0.25 nnz=510729 kappa=400 iters=100 marg_err=3.76e-08
+  [interval 2] dtau=0.25 nnz=519477 kappa=400 iters=100 marg_err=9.90e-08
+  [interval 3] dtau=0.5 nnz=524777 kappa=400 iters=100 marg_err=6.36e-08
+  [interval 4] dtau=0.5 nnz=502758 kappa=400 iters=110 marg_err=5.13e-08
+  [interval 5] dtau=0.5 nnz=534961 kappa=400 iters=130 marg_err=5.05e-08
+  [interval 6] dtau=0.5 nnz=533179 kappa=400 iters=220 marg_err=6.58e-08
+  [interval 7] dtau=0.5 nnz=536536 kappa=400 iters=250 marg_err=8.30e-08
+  [interval 8] dtau=0.5 nnz=534959 kappa=400 iters=220 marg_err=4.77e-08
+  [interval 9] dtau=0.5 nnz=526124 kappa=400 iters=610 marg_err=9.39e-08
+  [interval 10] dtau=0.5 nnz=538105 kappa=400 iters=680 marg_err=9.81e-08
+  [interval 11] dtau=0.5 nnz=551320 kappa=400 iters=880 marg_err=8.76e-08
+  [interval 12] dtau=0.5 nnz=547182 kappa=400 iters=19960 marg_err=1.00e-07
+  [interval 13] dtau=0.5 nnz=540504 kappa=400 iters=1020 marg_err=9.93e-08
+  [interval 14] dtau=0.5 nnz=547996 kappa=400 iters=980 marg_err=9.03e-08
+  [interval 15] dtau=0.5 nnz=542591 kappa=400 iters=830 marg_err=8.87e-08
+  [interval 16] dtau=0.5 nnz=538827 kappa=400 iters=770 marg_err=9.50e-08
+  [interval 17] dtau=0.5 nnz=538621 kappa=400 iters=860 marg_err=9.65e-08
+  [interval 18] dtau=0.5 nnz=536344 kappa=400 iters=850 marg_err=9.95e-08
+  [interval 19] dtau=0.5 nnz=532347 kappa=400 iters=20000 marg_err=2.07e-07
+  [interval 20] dtau=0.5 nnz=540393 kappa=400 iters=1320 marg_err=9.45e-08
+[stage0]   feasible=True max_marg_err=2.067e-07 nnz 502758-551320 (334s)
+
+[stage0] wrote /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/stage0_chain/cfg_18be3a1d48
+[stage0] chains built: {'0.01': True, '0.02': True, '0.05': True}
+
+[stage0] Stage-0 requirement 5 -- rerun the epsilon scan under the SAME scale and support:
+
+  sbatch 01_eps_scan.sbatch \
+      --h5ad /dartfs/rc/lab/C/CxQiu/data/joshua/wot_data/wot_serum_only_pca.h5ad \
+      --day-min 8.25 --day-max 18 \
+      --support knn --kappa 400 \
+      --cost-scale-mode global \
+      --out /dartfs/rc/lab/C/CxQiu/data/joshua/CellStateAdj/wot_serum/eps_scan_stage0_18be3a1d48
+
+  (the sbatch already supplies --stride 1 --stride 2; --stride is append-mode, so do not repeat it)
+
